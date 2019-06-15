@@ -1,19 +1,3 @@
-
-/* Use this file as a template to start implementing a module that
-   also declares object types. All occurrences of 'Pylwip' should be changed
-   to something reasonable for your objects. After that, all other
-   occurrences of 'pylwip' should be changed to something reasonable for your
-   module. If your module is named foo your sourcefile should be named
-   foomodule.c.
-
-   You will probably want to delete all references to 'x_attr' and add
-   your own types of attributes instead.  Maybe you want to name your
-   local variables other than 'self'.  If your object type is needed in
-   other files, you'll have to create a file "foobarobject.h"; see
-   floatobject.h for an example. */
-
-/* Pylwip objects */
-
 #include <lwip/init.h>
 #include <lwip/netif.h>
 #include <lwip/tcp.h>
@@ -23,9 +7,8 @@
 #include <lwip/priv/tcp_priv.h>
 #include "Python.h"
 
-// FIXME pbuf等对象需加 dealloc
 // 限制对象新建，如pbuf新建用pbuf_alloc，而不是Pbuf()
-// accept 回调，listener pcb与lwip中不共用，导致tcp_accept设置在python listener上的不会在lwip中生效
+// tcp_pcb memory leak seems fixed now
 static PyObject *ErrorObject;
 
 #define PylwipObject_Check(v)      (Py_TYPE(v) == &Pylwip_Type)
@@ -51,9 +34,11 @@ pylwip_tcp_tmr(PyObject *self, PyObject *args)
 
 struct pylwip_tcp_pcb{
     PyObject_HEAD;
+    PyFunctionObject* recv;
     PyFunctionObject* accept;
     int freed;
     // it's python's duty to free the pcb
+    // the tcp_pcb's lifetime should be as same as the python object
     struct tcp_pcb* tcp_pcb;
 };
 
@@ -65,9 +50,15 @@ struct pylwip_pbuf{
 
 struct pylwip_tcp_pcb_listen{
     PyObject_HEAD;
+    PyFunctionObject* recv;
     PyFunctionObject* accept;
     int freed;
     // it's python's duty to free the pcb
+    // when the python object dealloc, the tcp_pcb_listen may not be freed
+    // we should free the tcp_pcb_listen by call tcp_close(tcp_pcb_listen)
+    // the callback_arg is used for saving this object, when calling tcp_listen, we
+    // should callback_arg as this object and set call Py_XINCREAF(this)
+    // when tcp_close(this) called, we should also call Py_XDECREAF(this)
     struct tcp_pcb_listen* tcp_pcb_listen;
 };
 
@@ -92,16 +83,45 @@ static PyGetSetDef tcp_pcb_prop[] =
                 {"local_port", tcp_pcb_get_local_port, tcp_pcb_set_local_port, NULL, NULL},
                 {NULL, NULL, NULL, NULL, NULL}
         };
+
+void pbuf_dealloc(PyObject* self){
+    struct pylwip_pbuf* pbuf = (struct pylwip_pbuf*)self;
+    printf("%p pbuf dealloc\n", pbuf);
+    self->ob_type->tp_free(self);
+}
+
+void tcp_pcb_dealloc(PyObject* self){
+    struct pylwip_tcp_pcb* pcb = (struct pylwip_tcp_pcb*)self;
+    printf("%p tcp_pcb dealloc, lwip pcb: %p\n", pcb, pcb->tcp_pcb);
+    assert(!pcb->freed);
+
+    Py_XDECREF(pcb->tcp_pcb->callback_arg);
+    free(pcb->tcp_pcb);
+    pcb->freed = 1;
+
+    Py_XDECREF(pcb->accept);
+    Py_XDECREF(pcb->recv);
+    self->ob_type->tp_free(self);
+}
+
 #define pylwip_buf_get_attr(func_name, attr, func, ...)\
 PyObject* func_name(PyObject* self, void* _){\
     struct pylwip_pbuf *p = (struct pylwip_pbuf *) self;\
     return func(p->pbuf.attr, ##__VA_ARGS__);\
 }
 
+#define new_tcp_pcb(new_pcb, s, t, n)\
+s *new_pcb = PyObject_New(s, t);\
+new_pcb->freed = 0;\
+new_pcb->n = NULL;\
+new_pcb->accept = NULL;\
+new_pcb->recv = NULL;
+
+#define new_pylwip_tcp_pcb(name) new_tcp_pcb(name, struct pylwip_tcp_pcb, &TcpPcb_Type, tcp_pcb)
+#define new_pylwip_tcp_pcb_listen(name) new_tcp_pcb(name, struct pylwip_tcp_pcb_listen, &TcpPcbListen_Type, tcp_pcb_listen)
+
 PyObject* pylwip_pbuf_get_payload(PyObject* self, void* _){
     struct pylwip_pbuf *p = (struct pylwip_pbuf *) self;
-    printf("get payload %ul\n", p->pbuf.tot_len);
-
     return PyBytes_FromStringAndSize(p->pbuf.payload, p->pbuf.tot_len);
 }
 
@@ -123,6 +143,7 @@ static PyTypeObject TcpPcb_Type = {
         .tp_basicsize=sizeof(struct pylwip_tcp_pcb),                          /*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
         .tp_new=PyType_GenericNew,          /*tp_new*/
+        .tp_dealloc=tcp_pcb_dealloc
 };
 
 static PyTypeObject Pbuf_Type = {
@@ -132,6 +153,7 @@ static PyTypeObject Pbuf_Type = {
         .tp_basicsize=sizeof(struct pylwip_pbuf),                          /*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
         .tp_new=PyType_GenericNew,          /*tp_new*/
+        .tp_dealloc=pbuf_dealloc
 };
 
 static PyTypeObject TcpPcbListen_Type = {
@@ -141,6 +163,7 @@ static PyTypeObject TcpPcbListen_Type = {
         .tp_basicsize=sizeof(struct pylwip_tcp_pcb_listen),                          /*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
         .tp_new=PyType_GenericNew,          /*tp_new*/
+        .tp_dealloc=tcp_pcb_dealloc
 };
 
 struct pylwip_ip4_addr_t{
@@ -210,43 +233,44 @@ func_name(PyObject *self, PyObject *args)\
 
 err_t output_wrapper(struct netif *netif, struct pbuf *p,
        const ip4_addr_t *ipaddr){
-    printf("-----output: %p\n", p);
     struct pylwip_netif* py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
     struct pylwip_pbuf *py_pbuf = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
     struct pylwip_ip4_addr_t *py_ip_addr = PyObject_New(struct pylwip_ip4_addr_t, &Ip4AddrT_Type);
     py_pbuf->pbuf = *p;
     py_ip_addr->ip4_addr = *ipaddr;
     PyObject *args = PyTuple_Pack(3, py_netif, py_pbuf, py_ip_addr);
-//    Py_INCREF(py_netif);
-//    Py_INCREF(py_pbuf);
-//    Py_INCREF(py_ip_addr);
-//    printf("func: %ul\n", (unsigned int) py_netif->output->ob_base.ob_refcnt);
     PyObject* result = PyObject_Call((PyObject *) py_netif->output, args, NULL);
-    printf("done function called\n");
     Py_XDECREF(args);
+    Py_XDECREF(py_pbuf);
+    Py_XDECREF(py_ip_addr);
+    if (!result){
+        PyErr_Print();
+        return ERR_ABRT;
+    }
     if (!PyLong_Check(result)){
         PyErr_SetString(PyExc_AttributeError, "bad return value");
         Py_XDECREF(result);
         return ERR_ARG;
     }
+    err_t t = (err_t) PyLong_AsLong(result);
     Py_XDECREF(result);
-    return (err_t) PyLong_AsLong(result);
+    return t;
 }
 
 err_t input_wrapper(struct pbuf *p, struct netif *netif) {
-    printf("-----input: %p\n", p);
     struct pylwip_netif *py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
     struct pylwip_pbuf *py_pbuf = (struct pylwip_pbuf *) ((char*)p - offsetof(struct pylwip_pbuf, pbuf));
     PyObject *args = PyTuple_Pack(2, py_netif, py_pbuf);
     PyObject *result = PyObject_Call(py_netif->input, args, NULL);
     Py_XDECREF(args);
-    if (PyLong_Check(result)) {
+    if (!result || !PyLong_Check(result)) {
         PyErr_SetString(PyExc_AttributeError, "bad return value");
         Py_XDECREF(result);
         return ERR_ARG;
     }
+    err_t t = (err_t) PyLong_AsLong(result);
     Py_XDECREF(result);
-    return (err_t) PyLong_AsLong(result);
+    return t;
 }
 
 err_t init_wrapper(struct netif *netif) {
@@ -254,13 +278,14 @@ err_t init_wrapper(struct netif *netif) {
     PyObject *args = PyTuple_Pack(1, py_netif);
     PyObject *result = PyObject_Call((PyObject *) py_netif->init, args, NULL);
     Py_XDECREF(args);
-    if (!PyLong_Check(result)) {
+    if (!result || !PyLong_Check(result)) {
         PyErr_SetString(PyExc_AttributeError, "bad return value");
         Py_XDECREF(result);
         return ERR_ARG;
     }
+    err_t t = (err_t) PyLong_AsLong(result);
     Py_XDECREF(result);
-    return (err_t) PyLong_AsLong(result);
+    return t;
 }
 
 #define pylwip_set_netif_func(func_name, attr, cb) \
@@ -289,7 +314,6 @@ PyObject* func_name(PyObject* self, void* _){\
 PyObject* pylwip_netif_get_name(PyObject* self, void* _) {
     struct pylwip_netif *p = (struct pylwip_netif *) self;
     PyObject *name = PyBytes_FromString(p->netif.name);
-    Py_INCREF(name);
     return name;
 }
 
@@ -368,11 +392,10 @@ pylwip_tcp_new_ip_type(PyObject *self, PyObject *args)
         return NULL;
     };
     struct tcp_pcb * pcb = tcp_new_ip_type(type);
-    struct pylwip_tcp_pcb *new_obj = PyObject_New(struct pylwip_tcp_pcb, &TcpPcb_Type);
+    new_pylwip_tcp_pcb(new_obj)
     new_obj->tcp_pcb = pcb;
-    new_obj->freed = 0;
     Py_INCREF(Py_None);
-    Py_INCREF(new_obj);
+//    Py_INCREF(new_obj);
 //    free(pcb);
     return (PyObject *) new_obj;
 }
@@ -441,7 +464,7 @@ pylwip_tcp_listen(PyObject *self, PyObject *args)
     if (PyArg_ParseTuple(args, "O", &py_pcb) < 0){
         return NULL;
     };
-    struct pylwip_tcp_pcb_listen *new_obj = PyObject_New(struct pylwip_tcp_pcb_listen, &TcpPcbListen_Type);
+    new_pylwip_tcp_pcb_listen(new_obj)
     // tcp_listen will free pcb which must be malloc
     struct tcp_pcb_listen* pcb_listen = tcp_listen(py_pcb->tcp_pcb);
     assert(pcb_listen);
@@ -450,32 +473,39 @@ pylwip_tcp_listen(PyObject *self, PyObject *args)
     // the callback_arg is used for saving pylwip_tcp_pcb_listen object
     pcb_listen->callback_arg = new_obj;
     new_obj->tcp_pcb_listen = pcb_listen;
-    new_obj->freed = 0;
-    Py_INCREF(new_obj);
+//    Py_INCREF(new_obj);
+    Py_INCREF(new_obj); // for callback_arg
     return (PyObject *) new_obj;
 }
 
 
 static err_t
 pylwip_tcp_accept_wrapper(void *arg, struct tcp_pcb *newpcb, err_t err){
-    struct pylwip_tcp_pcb_listen* py_pcb_listen = (struct pylwip_tcp_pcb_listen*)arg;
+    struct pylwip_tcp_pcb_listen* py_pcb_listen = (struct pylwip_tcp_pcb_listen*)newpcb->listener->callback_arg;
     assert(py_pcb_listen);
     assert(py_pcb_listen->tcp_pcb_listen == newpcb->listener);
     assert(!py_pcb_listen->freed);
     PyFunctionObject* func = py_pcb_listen->accept;
 
-    struct pylwip_tcp_pcb *new_obj = PyObject_New(struct pylwip_tcp_pcb, &TcpPcb_Type);
-    new_obj->freed = 0;
+    new_pylwip_tcp_pcb(new_obj)
     new_obj->tcp_pcb = newpcb;
+    newpcb->callback_arg = new_obj;
 
     PyObject *args = PyTuple_Pack(3, Py_None, new_obj, PyLong_FromLong(err));
     PyObject* result = PyObject_Call((PyObject *) func, args, NULL);
+    if (!result){
+        PyErr_Print();
+        return ERR_ABRT;
+    }
     err_t r = (err_t) PyLong_AsLong(result);
-    Py_XINCREF(new_obj);
     Py_XDECREF(args);
+    // incref + decref = nothing
+    // Py_XINCREF(new_obj);
+    // Py_XDECREF(new_obj);
     Py_XDECREF(result);
     return r;
 }
+
 
 static PyObject *
 pylwip_tcp_accept(PyObject *self, PyObject *args)
@@ -485,9 +515,126 @@ pylwip_tcp_accept(PyObject *self, PyObject *args)
     if (PyArg_ParseTuple(args, "OO", &py_pcb_listen, &func) < 0){
         return NULL;
     };
+    Py_XDECREF(py_pcb_listen->accept);
     py_pcb_listen->accept = (PyFunctionObject *) func;
     tcp_accept((struct tcp_pcb *) py_pcb_listen->tcp_pcb_listen, pylwip_tcp_accept_wrapper);
     Py_XINCREF(func);
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pylwip_tcp_output(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* py_pcb=NULL;
+    if (PyArg_ParseTuple(args, "O", &py_pcb) < 0){
+        return NULL;
+    };
+    assert(py_pcb);
+    assert(!py_pcb->freed);
+    if(tcp_output(py_pcb->tcp_pcb) != ERR_OK){
+        printf("tcp_output error\n");
+    }
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pylwip_tcp_write(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* py_pcb=NULL;
+    char* arg;
+    long len;
+    int apiflags;
+    if (PyArg_ParseTuple(args, "Oyii", &py_pcb, &arg, &len, &apiflags) < 0){
+        return NULL;
+    };
+    assert(py_pcb);
+    assert(!py_pcb->freed);
+    if(tcp_write(py_pcb->tcp_pcb, arg, len, apiflags) != ERR_OK){
+        printf("tcp_write error");
+    }
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+static err_t
+pylwip_tcp_recv_wrapper(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err){
+    struct pylwip_tcp_pcb* py_pcb= (struct pylwip_tcp_pcb*)tpcb->callback_arg;
+    assert(py_pcb);
+    assert(!py_pcb->freed);
+    PyFunctionObject* func = py_pcb->recv;
+
+    PyObject *pbuf = NULL;
+    PyObject *py_err = PyLong_FromLong(err);
+    if (p){
+        pbuf = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
+        ((struct pylwip_pbuf*)pbuf)->pbuf = *p;
+    }
+    else{
+        pbuf = Py_None;
+        Py_XINCREF(Py_None);
+    }
+
+    PyObject *args = PyTuple_Pack(4, Py_None, py_pcb, pbuf, py_err);
+    PyObject* result = PyObject_Call((PyObject *) func, args, NULL);
+    if (!result){
+        // FIXME when error occurred, cleanup needed
+        PyErr_Print();
+        return ERR_ABRT;
+    }
+    err_t r = (err_t) PyLong_AsLong(result);
+    Py_XINCREF(Py_None);
+    Py_XDECREF(args);
+    Py_XDECREF(result);
+    Py_XDECREF(pbuf);
+    Py_XDECREF(py_err);
+    free(p);
+    return r;
+
+}
+static PyObject *
+pylwip_tcp_recv(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* py_pcb=NULL;
+    PyObject *func;
+    if (PyArg_ParseTuple(args, "OO", &py_pcb, &func) < 0){
+        return NULL;
+    };
+    Py_XDECREF(py_pcb->recv);
+    py_pcb->recv = (PyFunctionObject *) func;
+    tcp_recv(py_pcb->tcp_pcb, pylwip_tcp_recv_wrapper);
+    Py_XINCREF(func);
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+static PyObject *
+pylwip_tcp_close(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb_listen* py_pcb_listen=NULL;
+    if (PyArg_ParseTuple(args, "O", &py_pcb_listen) < 0 || !py_pcb_listen){
+        return NULL;
+    };
+    if (tcp_close((struct tcp_pcb *) py_pcb_listen->tcp_pcb_listen) != ERR_OK){
+        return NULL;
+    }
+    // here we leave the duty of free the pcb to python dealloc
+//    py_pcb_listen->freed = 1;
+//    Py_XDECREF(py_pcb_listen->tcp_pcb_listen->callback_arg);
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pylwip_tcp_recvd(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* pcb=NULL;
+    long len;
+    if (PyArg_ParseTuple(args, "Oi", &pcb, &len) < 0 || !pcb
+    || (Py_TYPE(pcb) != &TcpPcb_Type && Py_TYPE(pcb) != &TcpPcbListen_Type)){
+        return NULL;
+    };
+    tcp_recved(pcb->tcp_pcb, len);
     Py_XINCREF(Py_None);
     Py_RETURN_NONE;
 }
@@ -503,8 +650,6 @@ pylwip_ip_input(PyObject *self, PyObject *args)
     struct pbuf* pbuf = malloc(sizeof(struct pbuf));
     memcpy(pbuf, &buf->pbuf, sizeof(struct pbuf));
     err_t res = ip_input(pbuf, &netif->netif);
-    Py_XINCREF(buf);
-    Py_XINCREF(netif);
     return PyLong_FromLong(res);
 }
 
@@ -518,7 +663,6 @@ pylwip_pbuf_take(PyObject *self, PyObject *args)
         return NULL;
     };
     int res = pbuf_take(&buf->pbuf, ((PyBytesObject*)data)->ob_sval, len);
-    Py_XINCREF(buf);
     return PyLong_FromLong(res);
 }
 
@@ -533,7 +677,6 @@ pylwip_pbuf_alloc(PyObject *self, PyObject *args)
     struct pylwip_pbuf *new_obj = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
     new_obj->pbuf = *p;
     free(p);
-    Py_XINCREF(new_obj);
     return (PyObject *) new_obj;
 
 }
@@ -565,8 +708,18 @@ static PyMethodDef pylwip_methods[] = {
             PyDoc_STR("tcp_bind(tcp_pcb, addr, port) -> None")},
     {"tcp_listen",             (PyCFunction)pylwip_tcp_listen,         METH_VARARGS,
             PyDoc_STR("tcp_listen(tcp_pcb) -> TcpPcbListen")},
+    {"tcp_close",             (PyCFunction)pylwip_tcp_close,         METH_VARARGS,
+            PyDoc_STR("tcp_close(tcp_pcb) -> None")},
+    {"tcp_recv",             (PyCFunction)pylwip_tcp_recv,         METH_VARARGS,
+            PyDoc_STR("tcp_recv(pcb, recv) -> int")},
+    {"tcp_recvd",             (PyCFunction)pylwip_tcp_recvd,         METH_VARARGS,
+            PyDoc_STR("tcp_recvd(pcb, len) -> None")},
     {"tcp_accept",             (PyCFunction)pylwip_tcp_accept,         METH_VARARGS,
             PyDoc_STR("tcp_accept(tcp_pcb) -> int")},
+    {"tcp_write",             (PyCFunction)pylwip_tcp_write,         METH_VARARGS,
+            PyDoc_STR("tcp_write(pcb, arg, len, api_flag) -> int")},
+    {"tcp_output",             (PyCFunction)pylwip_tcp_output,         METH_VARARGS,
+            PyDoc_STR("tcp_output(tcp_pcb) -> int")},
     {"pbuf_take",             (PyCFunction)pylwip_pbuf_take,         METH_VARARGS,
             PyDoc_STR("pbuf_take(buf, dataptr, len) -> int")},
     {"pbuf_alloc",             (PyCFunction)pylwip_pbuf_alloc,         METH_VARARGS,
@@ -658,6 +811,8 @@ PyInit_pylwip(void)
     PyObject *b = PyModuleDef_Init(&pylwipmodule);
     return b;
 }
+
+// for embedded python
 void
 PyInit_tabinit(){
     PyImport_AppendInittab("pylwip", &PyInit_pylwip);

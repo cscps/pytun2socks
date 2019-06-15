@@ -52,8 +52,8 @@ setup(name='lwip',
                              extra_compile_args=['-g'],
                              define_macros=[('PLATFORM_LINUX', str(int(platform=="linux"))),
                                             ('PLATFORM_DARWIN', str(int(platform=="darwin"))),
-                                            ("LWIP_DEBUG", '1'),
-                                            ("LWIP_DBG_TYPES_ON", '1'),
+                                            # ("LWIP_DEBUG", '1'),
+                                            # ("LWIP_DBG_TYPES_ON", '1'),
                                             ],)],
 
       classifiers=[
