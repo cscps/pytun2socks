@@ -51,7 +51,8 @@ tun.set(addr="11.0.0.1", dstaddr="11.0.0.20", netmask="255.255.255.0", mtu=1500,
 tun.up()
 tun.setblocking(False)
 import time
-t = time.time()
+from ssl_proxy import SSLProxy
+s = SSLProxy(server_side=True, pem_path="./ssl/CA.crt", key_path="./ssl/CA.key")
 def tcp_recv(arg, tpcb, p, err):
     print("tcp_recv")
     if not p:
@@ -61,12 +62,15 @@ def tcp_recv(arg, tpcb, p, err):
     #print(">>>>", p.payload)
     pylwip.tcp_recvd(tpcb, len(p.payload))
     #print("tcp recvd %d"%len(p.payload))
-    to_pcb = pylwip.tcp_new_ip_type(0)
-    to_pcb = tpcb;
-    pylwip.tcp_write(to_pcb, b"test reply", 10, 1)
-    pylwip.tcp_output(to_pcb)
+    d = s.feed(p.payload)
+    if d:
+        pylwip.tcp_write(tpcb, d, len(d), 1)
+        pylwip.tcp_output(tpcb)
+    if s.handshake_done:
+        print("handshake_done")
+        print(s.read())
     return 0
-t = 0
+t = time.time()
 c = 0
 def f():
         import time

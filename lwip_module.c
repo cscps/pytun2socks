@@ -572,16 +572,22 @@ static PyObject *
 pylwip_tcp_write(PyObject *self, PyObject *args)
 {
     struct pylwip_tcp_pcb* py_pcb=NULL;
-    char* arg;
-    long len;
+    Py_ssize_t len;
     int apiflags;
-    if (PyArg_ParseTuple(args, "Oyii", &py_pcb, &arg, &len, &apiflags) < 0){
+//    Py_buffer arg = {};
+    char* arg;
+    int bytes_len;
+    if (PyArg_ParseTuple(args, "Os#ni", &py_pcb, &arg, &bytes_len, &len, &apiflags) < 0){
         return NULL;
     };
     assert(py_pcb);
     assert(!py_pcb->freed);
+    if (len > bytes_len){
+        PyErr_BadArgument();
+        return NULL;
+    }
     if(tcp_write(py_pcb->tcp_pcb, arg, len, apiflags) != ERR_OK){
-        printf("tcp_write error");
+        printf("tcp_write error\n");
         return NULL;
     }
     Py_XINCREF(Py_None);
@@ -673,7 +679,7 @@ pylwip_tcp_recvd(PyObject *self, PyObject *args)
 {
     struct pylwip_tcp_pcb* pcb=NULL;
     long len;
-    if (PyArg_ParseTuple(args, "Oi", &pcb, &len) < 0 || !pcb
+    if (PyArg_ParseTuple(args, "Ol", &pcb, &len) < 0 || !pcb
     || (Py_TYPE(pcb) != &TcpPcb_Type && Py_TYPE(pcb) != &TcpPcbListen_Type)){
         return NULL;
     };
@@ -705,7 +711,7 @@ pylwip_pbuf_take(PyObject *self, PyObject *args)
     struct pylwip_pbuf* buf = NULL;
     PyObject* data = NULL;
     long len;
-    if (PyArg_ParseTuple(args, "OOi", &buf, &data, &len) < 0){
+    if (PyArg_ParseTuple(args, "OOl", &buf, &data, &len) < 0){
         return NULL;
     };
     int res = pbuf_take(&buf->pbuf, ((PyBytesObject*)data)->ob_sval, len);
@@ -716,7 +722,7 @@ static PyObject *
 pylwip_pbuf_alloc(PyObject *self, PyObject *args)
 {
     long len;
-    if (PyArg_ParseTuple(args, "i", &len) < 0){
+    if (PyArg_ParseTuple(args, "l", &len) < 0){
         return NULL;
     };
     struct pbuf* p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
