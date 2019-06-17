@@ -375,8 +375,11 @@ pylwip_netif_add(PyObject *self, PyObject *args, PyObject* kw){
     netif->init = (PyFunctionObject *) netif_init_func;
     Py_XINCREF(netif_input_func);
     Py_XINCREF(netif_init_func);
-    netif_add(&netif->netif, &ipaddr->ip4_addr, &netmask->ip4_addr, &gw->ip4_addr,
+    err_t r = netif_add(&netif->netif, &ipaddr->ip4_addr, &netmask->ip4_addr, &gw->ip4_addr,
             NULL, init_wrapper, input_wrapper);
+    if (!r){
+        return NULL;
+    }
     Py_RETURN_NONE;
 }
 
@@ -392,6 +395,9 @@ pylwip_tcp_new_ip_type(PyObject *self, PyObject *args)
         return NULL;
     };
     struct tcp_pcb * pcb = tcp_new_ip_type(type);
+    if (!pcb){
+        return NULL;
+    }
     new_pylwip_tcp_pcb(new_obj)
     new_obj->tcp_pcb = pcb;
     Py_INCREF(Py_None);
@@ -422,7 +428,9 @@ pylwip_tcp_bind_to_netif(PyObject *self, PyObject *args)
         return NULL;
     };
     assert(py_pcb && !py_pcb->freed);
-    tcp_bind_to_netif(py_pcb->tcp_pcb, ifname);
+    if (tcp_bind_to_netif(py_pcb->tcp_pcb, ifname) != ERR_OK){
+        return NULL;
+    }
     Py_INCREF(Py_None);
     Py_RETURN_NONE;
 }
@@ -452,7 +460,9 @@ pylwip_tcp_bind(PyObject *self, PyObject *args)
     };
     // TODO ipaddr be NULL
     assert(py_pcb && !py_pcb->freed);
-    tcp_bind(py_pcb->tcp_pcb, NULL, port);
+    if (tcp_bind(py_pcb->tcp_pcb, NULL, port) != ERR_OK){
+        return NULL;
+    };
     Py_INCREF(Py_None);
     Py_RETURN_NONE;
 }
@@ -534,7 +544,26 @@ pylwip_tcp_output(PyObject *self, PyObject *args)
     assert(!py_pcb->freed);
     if(tcp_output(py_pcb->tcp_pcb) != ERR_OK){
         printf("tcp_output error\n");
+        return NULL;
     }
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+// Aborts the connection by sending a RST (reset) segment to the remote host.
+// The pcb is deallocated. This function never fails.
+//ATTENTION: When calling this from one of the TCP callbacks,
+// make sure you always return ERR_ABRT (and never return ERR_ABRT otherwise
+// or you will risk accessing deallocated memory or memory leaks!
+static PyObject *
+pylwip_tcp_abort(PyObject *self, PyObject *args) {
+    struct pylwip_tcp_pcb *py_pcb = NULL;
+    if (PyArg_ParseTuple(args, "O", &py_pcb) < 0) {
+        return NULL;
+    };
+    assert(py_pcb);
+    assert(!py_pcb->freed);
+    tcp_abort(py_pcb->tcp_pcb);
     Py_XINCREF(Py_None);
     Py_RETURN_NONE;
 }
@@ -553,6 +582,7 @@ pylwip_tcp_write(PyObject *self, PyObject *args)
     assert(!py_pcb->freed);
     if(tcp_write(py_pcb->tcp_pcb, arg, len, apiflags) != ERR_OK){
         printf("tcp_write error");
+        return NULL;
     }
     Py_XINCREF(Py_None);
     Py_RETURN_NONE;
@@ -567,6 +597,8 @@ pylwip_tcp_recv_wrapper(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
 
     PyObject *pbuf = NULL;
     PyObject *py_err = PyLong_FromLong(err);
+    // f the remote host closes the connection, the callback function will
+    // be called with a NULL pbuf to indicate that fact.
     if (p){
         pbuf = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
         ((struct pylwip_pbuf*)pbuf)->pbuf = *p;
@@ -578,8 +610,15 @@ pylwip_tcp_recv_wrapper(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t e
 
     PyObject *args = PyTuple_Pack(4, Py_None, py_pcb, pbuf, py_err);
     PyObject* result = PyObject_Call((PyObject *) func, args, NULL);
+    // Sets the callback function that will be called when new data arrives.
+    // If there are no errors and the callback function returns ERR_OK,
+    // then it is responsible for freeing the pbuf. Otherwise,
+    // it must not free the pbuf so that lwIP core code can store it.
     if (!result){
         // FIXME when error occurred, cleanup needed
+        Py_XDECREF(args);
+        Py_XDECREF(pbuf);
+        Py_XDECREF(py_err);
         PyErr_Print();
         return ERR_ABRT;
     }
@@ -625,6 +664,10 @@ pylwip_tcp_close(PyObject *self, PyObject *args)
     Py_RETURN_NONE;
 }
 
+// Must be called when the application has processed the data
+// and is prepared to receive more. The purpose is to advertise
+// a larger window when the data has been processed.
+// The len argument indicates the length of the processed data.
 static PyObject *
 pylwip_tcp_recvd(PyObject *self, PyObject *args)
 {
@@ -648,6 +691,9 @@ pylwip_ip_input(PyObject *self, PyObject *args)
     };
     // ip_input will free the pbuf
     struct pbuf* pbuf = malloc(sizeof(struct pbuf));
+    if (!pbuf){
+        return NULL;
+    }
     memcpy(pbuf, &buf->pbuf, sizeof(struct pbuf));
     err_t res = ip_input(pbuf, &netif->netif);
     return PyLong_FromLong(res);
@@ -720,6 +766,11 @@ static PyMethodDef pylwip_methods[] = {
             PyDoc_STR("tcp_write(pcb, arg, len, api_flag) -> int")},
     {"tcp_output",             (PyCFunction)pylwip_tcp_output,         METH_VARARGS,
             PyDoc_STR("tcp_output(tcp_pcb) -> int")},
+    {"tcp_abort",             (PyCFunction)pylwip_tcp_abort,         METH_VARARGS,
+            PyDoc_STR("tcp_abort(tcp_pcb) -> None\n"
+                      "ATTENTION: When calling this from one of the TCP callbacks,\n"
+                      "make sure you always return ERR_ABRT (and never return ERR_ABRT otherwise \n"
+                      "or you will risk accessing deallocated memory or memory leaks!")},
     {"pbuf_take",             (PyCFunction)pylwip_pbuf_take,         METH_VARARGS,
             PyDoc_STR("pbuf_take(buf, dataptr, len) -> int")},
     {"pbuf_alloc",             (PyCFunction)pylwip_pbuf_alloc,         METH_VARARGS,
@@ -780,6 +831,29 @@ pylwip_exec(PyObject *m)
     if (PyType_Ready(&Netif_Type) < 0)
         goto fail;
     PyModule_AddObject(m, "Netif", (PyObject *)&Netif_Type);
+
+    // ERROR CODE CONSTANT
+    PyModule_AddIntConstant(m, "ERR_OK", ERR_OK);
+    PyModule_AddIntConstant(m, "ERR_ABRT", ERR_ABRT);
+    PyModule_AddIntConstant(m, "ERR_ALREADY", ERR_ALREADY);
+    PyModule_AddIntConstant(m, "ERR_ARG", ERR_ARG);
+    PyModule_AddIntConstant(m, "ERR_OK", ERR_OK);
+    PyModule_AddIntConstant(m, "ERR_MEM", ERR_MEM);
+    PyModule_AddIntConstant(m, "ERR_BUF", ERR_BUF);
+    PyModule_AddIntConstant(m, "ERR_TIMEOUT", ERR_TIMEOUT);
+    PyModule_AddIntConstant(m, "ERR_RTE", ERR_RTE);
+    PyModule_AddIntConstant(m, "ERR_INPROGRESS", ERR_INPROGRESS);
+    PyModule_AddIntConstant(m, "ERR_VAL", ERR_VAL);
+    PyModule_AddIntConstant(m, "ERR_WOULDBLOCK", ERR_WOULDBLOCK);
+    PyModule_AddIntConstant(m, "ERR_USE", ERR_USE);
+    PyModule_AddIntConstant(m, "ERR_ALREADY", ERR_ALREADY);
+    PyModule_AddIntConstant(m, "ERR_ISCONN", ERR_ISCONN);
+    PyModule_AddIntConstant(m, "ERR_CONN", ERR_CONN);
+    PyModule_AddIntConstant(m, "ERR_IF", ERR_IF);
+    PyModule_AddIntConstant(m, "ERR_ABRT", ERR_ABRT);
+    PyModule_AddIntConstant(m, "ERR_RST", ERR_RST);
+    PyModule_AddIntConstant(m, "ERR_CLSD", ERR_CLSD);
+    PyModule_AddIntConstant(m, "ERR_ARG", ERR_ARG);
     return 0;
  fail:
     Py_XDECREF(m);
