@@ -27,6 +27,12 @@ include_directories(${LWIP_INCLUDES})
 #add_subdirectory(${LIB_LWIP_DIR})
 #target_link_libraries(lwip)
 #link_libraries(lwip)
+set(PY_LWIP_SOURCES
+        src/lwip_module.c
+        src/ip4_addr.c
+        src/ip_addr.c
+        src/tcp_pcb.c)
+
 set(LWIP_SOURCES
         ${LIB_LWIP_DIR}src/api/err.c
         ${LIB_LWIP_DIR}src/core/udp.c
@@ -53,6 +59,5 @@ set(LWIP_SOURCES
         ${LIB_LWIP_DIR}src/core/ipv6/icmp6.c
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_addr.c
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_frag.c
-        ${LIB_LWIP_DIR}custom/sys.c
-        )
-add_executable(pytun2socks lwip_module.c ${PYTUN2SOCKS_DIR}/test_embbed.c tuntap/tun.c tuntap/tun.h ${LWIP_SOURCES})
+        ${LIB_LWIP_DIR}custom/sys.c src/pbuf.c src/pbuf.h src/netif.c src/netif.h)
+add_executable(pytun2socks ${PY_LWIP_SOURCES} ${PYTUN2SOCKS_DIR}/test_embbed.c tuntap/tun.c tuntap/tun.h ${LWIP_SOURCES})

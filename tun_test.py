@@ -59,7 +59,8 @@ def tcp_recv(arg, tpcb, p, err):
         print("connection should close now")
         pylwip.tcp_close(tpcb)
         return 0
-    #print(">>>>", p.payload)
+    print(">>>>", tpcb.remote_ip.u_addr.addr, tpcb.remote_port)
+    print(">>>>", tpcb.local_ip.u_addr.addr, tpcb.local_port)
     pylwip.tcp_recvd(tpcb, len(p.payload))
     #print("tcp recvd %d"%len(p.payload))
     d = s.feed(p.payload)

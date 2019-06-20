@@ -39,6 +39,15 @@ f"{LIB_LWIP_DIR}/src/core",
 f"{LIB_LWIP_DIR}/src/core/ipv4",
 f"{LIB_LWIP_DIR}/src/core/ipv6"]
 
+PY_LWIP_SOURCES = [
+"src/ip4_addr.c",
+"src/ip_addr.c",
+"src/lwip_module.c",
+"src/netif.c",
+"src/pbuf.c",
+"src/tcp_pcb.c"
+]
+
 setup(name='lwip',
       author='cs',
       author_email='cscs010010@gmail.com',
@@ -47,7 +56,7 @@ setup(name='lwip',
       description='lwip wrapper for python',
       # long_description=open('README.rst').read(),
       version='0.0.1',
-      ext_modules=[Extension('pylwip', ['lwip_module.c', *[LIB_LWIP_DIR+s for s in LWIP_SOURCES]],
+      ext_modules=[Extension('pylwip', [*PY_LWIP_SOURCES, *[LIB_LWIP_DIR+s for s in LWIP_SOURCES]],
                              include_dirs=LWIP_INCLUDES,
                              extra_compile_args=['-g'],
                              define_macros=[('PLATFORM_LINUX', str(int(platform=="linux"))),

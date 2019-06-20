@@ -1,18 +1,26 @@
+#include "Python.h"
+#include <object.h>
+
 #include <lwip/init.h>
 #include <lwip/netif.h>
 #include <lwip/tcp.h>
 #include <lwip/ip4_addr.h>
+#include <lwip/ip_addr.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <lwip/priv/tcp_priv.h>
-#include "Python.h"
+#include <lwip/igmp.h>
+#include "ip4_addr.h"
+#include "ip_addr.h"
+#include "pbuf.h"
+#include "netif.h"
+#include "tcp_pcb.h"
 
 // 限制对象新建，如pbuf新建用pbuf_alloc，而不是Pbuf()
 // tcp_pcb memory leak seems fixed now
 static PyObject *ErrorObject;
 
 #define PylwipObject_Check(v)      (Py_TYPE(v) == &Pylwip_Type)
-#define NetifToPyLWIPNetIf(netif) ((char*)netif - offsetof(struct pylwip_netif, netif))
 /* Pylwip methods */
 
 
@@ -32,83 +40,6 @@ pylwip_tcp_tmr(PyObject *self, PyObject *args)
     return Py_None;
 }
 
-struct pylwip_tcp_pcb{
-    PyObject_HEAD;
-    PyFunctionObject* recv;
-    PyFunctionObject* accept;
-    int freed;
-    // it's python's duty to free the pcb
-    // the tcp_pcb's lifetime should be as same as the python object
-    struct tcp_pcb* tcp_pcb;
-};
-
-struct pylwip_pbuf{
-    PyObject_HEAD;
-    struct pbuf pbuf;
-};
-
-
-struct pylwip_tcp_pcb_listen{
-    PyObject_HEAD;
-    PyFunctionObject* recv;
-    PyFunctionObject* accept;
-    int freed;
-    // it's python's duty to free the pcb
-    // when the python object dealloc, the tcp_pcb_listen may not be freed
-    // we should free the tcp_pcb_listen by call tcp_close(tcp_pcb_listen)
-    // the callback_arg is used for saving this object, when calling tcp_listen, we
-    // should callback_arg as this object and set call Py_XINCREAF(this)
-    // when tcp_close(this) called, we should also call Py_XDECREAF(this)
-    struct tcp_pcb_listen* tcp_pcb_listen;
-};
-
-PyObject* tcp_pcb_get_local_port(PyObject* self, void* _){
-    struct pylwip_tcp_pcb *p = (struct pylwip_tcp_pcb *) self;
-    assert(!p->freed);
-    return PyLong_FromLong(p->tcp_pcb->local_port);
-}
-
-int tcp_pcb_set_local_port(PyObject* self, PyObject *value, void *_){
-    if(!PyLong_Check(value)){
-        PyErr_SetString(PyExc_AttributeError, "int object expected");
-        return -1;
-    };
-    struct pylwip_tcp_pcb *p = (struct pylwip_tcp_pcb *) self;
-    assert(!p->freed);
-    p->tcp_pcb->local_port = PyLong_AsLong(value);
-    return 0;
-}
-static PyGetSetDef tcp_pcb_prop[] =
-        {
-                {"local_port", tcp_pcb_get_local_port, tcp_pcb_set_local_port, NULL, NULL},
-                {NULL, NULL, NULL, NULL, NULL}
-        };
-
-void pbuf_dealloc(PyObject* self){
-    struct pylwip_pbuf* pbuf = (struct pylwip_pbuf*)self;
-    printf("%p pbuf dealloc\n", pbuf);
-    self->ob_type->tp_free(self);
-}
-
-void tcp_pcb_dealloc(PyObject* self){
-    struct pylwip_tcp_pcb* pcb = (struct pylwip_tcp_pcb*)self;
-    printf("%p tcp_pcb dealloc, lwip pcb: %p\n", pcb, pcb->tcp_pcb);
-    assert(!pcb->freed);
-
-    Py_XDECREF(pcb->tcp_pcb->callback_arg);
-    free(pcb->tcp_pcb);
-    pcb->freed = 1;
-
-    Py_XDECREF(pcb->accept);
-    Py_XDECREF(pcb->recv);
-    self->ob_type->tp_free(self);
-}
-
-#define pylwip_buf_get_attr(func_name, attr, func, ...)\
-PyObject* func_name(PyObject* self, void* _){\
-    struct pylwip_pbuf *p = (struct pylwip_pbuf *) self;\
-    return func(p->pbuf.attr, ##__VA_ARGS__);\
-}
 
 #define new_tcp_pcb(new_pcb, s, t, n)\
 s *new_pcb = PyObject_New(s, t);\
@@ -120,272 +51,8 @@ new_pcb->recv = NULL;
 #define new_pylwip_tcp_pcb(name) new_tcp_pcb(name, struct pylwip_tcp_pcb, &TcpPcb_Type, tcp_pcb)
 #define new_pylwip_tcp_pcb_listen(name) new_tcp_pcb(name, struct pylwip_tcp_pcb_listen, &TcpPcbListen_Type, tcp_pcb_listen)
 
-PyObject* pylwip_pbuf_get_payload(PyObject* self, void* _){
-    struct pylwip_pbuf *p = (struct pylwip_pbuf *) self;
-    return PyBytes_FromStringAndSize(p->pbuf.payload, p->pbuf.tot_len);
-}
-
-pylwip_buf_get_attr(pylwip_pbuf_get_len, len, PyLong_FromLong);
-pylwip_buf_get_attr(pylwip_pbuf_get_tot_len, tot_len, PyLong_FromLong);
-
-static PyGetSetDef pbuf_prop[] =
-        {
-                {"len", pylwip_pbuf_get_len, NULL, NULL, NULL},
-                {"tot_len", pylwip_pbuf_get_tot_len, NULL, NULL, NULL},
-                {"payload", pylwip_pbuf_get_payload, NULL, NULL, NULL},
-                {NULL, NULL, NULL, NULL, NULL}
-        };
-
-static PyTypeObject TcpPcb_Type = {
-        PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name="pylwip.TcpPcb",             /*tp_name*/
-        .tp_getset=tcp_pcb_prop,
-        .tp_basicsize=sizeof(struct pylwip_tcp_pcb),                          /*tp_basicsize*/
-        .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
-        .tp_dealloc=tcp_pcb_dealloc
-};
-
-static PyTypeObject Pbuf_Type = {
-        PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name="pylwip.Pbuf",             /*tp_name*/
-        .tp_getset=pbuf_prop,
-        .tp_basicsize=sizeof(struct pylwip_pbuf),                          /*tp_basicsize*/
-        .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
-        .tp_dealloc=pbuf_dealloc
-};
-
-static PyTypeObject TcpPcbListen_Type = {
-        PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name="pylwip.TcpPcbListen",             /*tp_name*/
-//        .tp_getset=tcp_pcb_prop,
-        .tp_basicsize=sizeof(struct pylwip_tcp_pcb_listen),                          /*tp_basicsize*/
-        .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
-        .tp_dealloc=tcp_pcb_dealloc
-};
-
-struct pylwip_ip4_addr_t{
-    PyObject_HEAD;
-    ip4_addr_t ip4_addr;
-};
-
-PyObject* pylwip_ip4_addr_t_get_addr(PyObject* self, void* _){
-    struct pylwip_ip4_addr_t *p = (struct pylwip_ip4_addr_t *) self;
-    struct in_addr ia={.s_addr=p->ip4_addr.addr};
-    return PyBytes_FromString(inet_ntoa(ia));
-
-}
-
-int pylwip_ip4_addr_t_set_addr(PyObject* self, PyObject *value, void *_){
-    struct pylwip_ip4_addr_t *ip4_addr = (struct pylwip_ip4_addr_t *) self;
-    if(!PyBytes_Check(value)){
-        PyErr_SetString(PyExc_AttributeError, "bytes object expected");
-        return -1;
-    };
-    char* addr = PyBytes_AsString(value);
-    struct in_addr ia;
-    if (inet_aton(addr, &ia)==0){
-        PyErr_SetString(PyExc_AttributeError, "Bad address");
-        return -1;
-    };
-    ip4_addr->ip4_addr.addr = ia.s_addr;
-    return 0;
-}
-
-static PyGetSetDef pylwip_ip4_addr_t[] =
-        {
-                {"addr", pylwip_ip4_addr_t_get_addr, pylwip_ip4_addr_t_set_addr, NULL, NULL},
-                {NULL, NULL, NULL, NULL, NULL}
-        };
-
-static PyTypeObject Ip4AddrT_Type = {
-        PyVarObject_HEAD_INIT(NULL, 0)
-        .tp_name="pylwip.Ip4AddrT",             /*tp_name*/
-        .tp_getset=pylwip_ip4_addr_t,
-        .tp_basicsize=sizeof(struct pylwip_ip4_addr_t),                          /*tp_basicsize*/
-        .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
-};
-
-struct pylwip_netif{
-    PyObject_HEAD;
-    struct netif netif;
-    PyFunctionObject* output;
-    PyFunctionObject* input;
-    PyFunctionObject* init;
-};
-
-#define netif_set_func(func_name, func)\
-static PyObject *\
-func_name(PyObject *self, PyObject *args)\
-{\
-    struct pylwip_netif* py_netif = NULL;\
-    if(PyArg_ParseTuple(args, "|O", &py_netif) < 0){\
-        return NULL;\
-    };\
-    func(&py_netif->netif);\
-    Py_INCREF(Py_None);\
-    return Py_None;\
-}
-
-
-err_t output_wrapper(struct netif *netif, struct pbuf *p,
-       const ip4_addr_t *ipaddr){
-    struct pylwip_netif* py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
-    struct pylwip_pbuf *py_pbuf = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
-    struct pylwip_ip4_addr_t *py_ip_addr = PyObject_New(struct pylwip_ip4_addr_t, &Ip4AddrT_Type);
-    py_pbuf->pbuf = *p;
-    py_ip_addr->ip4_addr = *ipaddr;
-    PyObject *args = PyTuple_Pack(3, py_netif, py_pbuf, py_ip_addr);
-    PyObject* result = PyObject_Call((PyObject *) py_netif->output, args, NULL);
-    Py_XDECREF(args);
-    Py_XDECREF(py_pbuf);
-    Py_XDECREF(py_ip_addr);
-    if (!result){
-        PyErr_Print();
-        return ERR_ABRT;
-    }
-    if (!PyLong_Check(result)){
-        PyErr_SetString(PyExc_AttributeError, "bad return value");
-        Py_XDECREF(result);
-        return ERR_ARG;
-    }
-    err_t t = (err_t) PyLong_AsLong(result);
-    Py_XDECREF(result);
-    return t;
-}
-
-err_t input_wrapper(struct pbuf *p, struct netif *netif) {
-    struct pylwip_netif *py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
-    struct pylwip_pbuf *py_pbuf = (struct pylwip_pbuf *) ((char*)p - offsetof(struct pylwip_pbuf, pbuf));
-    PyObject *args = PyTuple_Pack(2, py_netif, py_pbuf);
-    PyObject *result = PyObject_Call(py_netif->input, args, NULL);
-    Py_XDECREF(args);
-    if (!result || !PyLong_Check(result)) {
-        PyErr_SetString(PyExc_AttributeError, "bad return value");
-        Py_XDECREF(result);
-        return ERR_ARG;
-    }
-    err_t t = (err_t) PyLong_AsLong(result);
-    Py_XDECREF(result);
-    return t;
-}
-
-err_t init_wrapper(struct netif *netif) {
-    struct pylwip_netif *py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
-    PyObject *args = PyTuple_Pack(1, py_netif);
-    PyObject *result = PyObject_Call((PyObject *) py_netif->init, args, NULL);
-    Py_XDECREF(args);
-    if (!result || !PyLong_Check(result)) {
-        PyErr_SetString(PyExc_AttributeError, "bad return value");
-        Py_XDECREF(result);
-        return ERR_ARG;
-    }
-    err_t t = (err_t) PyLong_AsLong(result);
-    Py_XDECREF(result);
-    return t;
-}
-
-#define pylwip_set_netif_func(func_name, attr, cb) \
-int func_name(PyObject* self, PyObject* value, void* _){\
-    PyFunctionObject* func = (PyFunctionObject *) value;\
-    struct pylwip_netif *p = (struct pylwip_netif *) self;\
-    Py_XDECREF(p->attr);\
-    p->attr = func;\
-    p->netif.attr = cb;\
-    Py_XINCREF(func);\
-    return 0;\
-}
-
-#define pylwip_get_netif_func(func_name, attr) \
-PyObject* func_name(PyObject* self, void* _){\
-    struct pylwip_netif *p = (struct pylwip_netif *) self;\
-    if (p->attr){\
-        /** here must incref the object**/\
-        Py_XINCREF(p->attr);\
-        return (PyObject *) p->attr;\
-    }\
-    else{\
-        Py_RETURN_NONE;\
-    }\
-}
-PyObject* pylwip_netif_get_name(PyObject* self, void* _) {
-    struct pylwip_netif *p = (struct pylwip_netif *) self;
-    PyObject *name = PyBytes_FromString(p->netif.name);
-    return name;
-}
-
-int pylwip_netif_set_name(PyObject* self, PyObject* value, void* args){
-    struct pylwip_netif *p = (struct pylwip_netif *) self;
-    if(!PyBytes_Check(value)){
-        printf("error type\n");
-        PyErr_SetNone(Py_None);
-        return -1;
-    }
-    strncpy(p->netif.name, ((PyBytesObject*)value)->ob_sval, 2);
-    return 0;
-}
-
-
-pylwip_set_netif_func(pylwip_set_output, output, output_wrapper);
-pylwip_get_netif_func(pylwip_get_output, output);
-
-pylwip_set_netif_func(pylwip_set_input, input, input_wrapper);
-pylwip_get_netif_func(pylwip_get_input, input);
-
-static PyGetSetDef pylwip_netif_getsets[] =
-        {
-                {"output", pylwip_get_output, pylwip_set_output, NULL, NULL},
-                {"input", pylwip_get_input, pylwip_set_input, NULL, NULL},
-                {"name", pylwip_netif_get_name, pylwip_netif_set_name, NULL, NULL},
-                {NULL, NULL, NULL, NULL, NULL}
-        };
-
-static PyTypeObject Netif_Type = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    .tp_name="pylwip.Netif",       /*tp_name*/
-    .tp_basicsize=sizeof(struct pylwip_netif),/*tp_basicsize*/
-    .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-    .tp_new=PyType_GenericNew,          /*tp_new*/
-    .tp_getset=pylwip_netif_getsets
-};
-
 
 /* ---------- */
-
-static PyObject *
-pylwip_netif_add(PyObject *self, PyObject *args, PyObject* kw){
-    char* kwlist[] = {"netif", "ipaddr", "netmask", "gw", "state", "init", "input", NULL};
-    struct pylwip_netif *netif = NULL;
-    struct pylwip_ip4_addr_t *ipaddr = NULL;
-    struct pylwip_ip4_addr_t *netmask = NULL;
-    struct pylwip_ip4_addr_t *gw = NULL;
-    PyObject *state = NULL;
-    PyObject *netif_init_func = NULL;
-    PyObject *netif_input_func = NULL;
-    if ((!args || !kw) || !PyArg_ParseTupleAndKeywords(args, kw, "|$OOOOOOO", kwlist,
-                                     &netif, &ipaddr, &netmask, &gw, &state, &netif_init_func, &netif_input_func))
-    {
-        printf("args err \n");
-        return NULL;
-    }
-    netif->input = (PyFunctionObject *) netif_input_func;
-    netif->init = (PyFunctionObject *) netif_init_func;
-    Py_XINCREF(netif_input_func);
-    Py_XINCREF(netif_init_func);
-    err_t r = netif_add(&netif->netif, &ipaddr->ip4_addr, &netmask->ip4_addr, &gw->ip4_addr,
-            NULL, init_wrapper, input_wrapper);
-    if (!r){
-        return NULL;
-    }
-    Py_RETURN_NONE;
-}
-
-netif_set_func(pylwip_netif_set_up, netif_set_up);
-netif_set_func(pylwip_netif_set_link_up, netif_set_link_up);
-netif_set_func(pylwip_netif_set_default, netif_set_default);
 
 static PyObject *
 pylwip_tcp_new_ip_type(PyObject *self, PyObject *args)
@@ -705,34 +372,6 @@ pylwip_ip_input(PyObject *self, PyObject *args)
     return PyLong_FromLong(res);
 }
 
-static PyObject *
-pylwip_pbuf_take(PyObject *self, PyObject *args)
-{
-    struct pylwip_pbuf* buf = NULL;
-    PyObject* data = NULL;
-    long len;
-    if (PyArg_ParseTuple(args, "OOl", &buf, &data, &len) < 0){
-        return NULL;
-    };
-    int res = pbuf_take(&buf->pbuf, ((PyBytesObject*)data)->ob_sval, len);
-    return PyLong_FromLong(res);
-}
-
-static PyObject *
-pylwip_pbuf_alloc(PyObject *self, PyObject *args)
-{
-    long len;
-    if (PyArg_ParseTuple(args, "l", &len) < 0){
-        return NULL;
-    };
-    struct pbuf* p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
-    struct pylwip_pbuf *new_obj = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
-    new_obj->pbuf = *p;
-    free(p);
-    return (PyObject *) new_obj;
-
-}
-
 /* List of functions defined in the module */
 
 static PyMethodDef pylwip_methods[] = {
@@ -833,6 +472,10 @@ pylwip_exec(PyObject *m)
         goto fail;
     PyModule_AddObject(m, "Ip4AddrT", (PyObject *)&Ip4AddrT_Type);
 
+    if (PyType_Ready(&IpAddrT_Type) < 0)
+        goto fail;
+    PyModule_AddObject(m, "IpAddrT", (PyObject *)&IpAddrT_Type);
+
     /* Add Netif */
     if (PyType_Ready(&Netif_Type) < 0)
         goto fail;
@@ -860,6 +503,11 @@ pylwip_exec(PyObject *m)
     PyModule_AddIntConstant(m, "ERR_RST", ERR_RST);
     PyModule_AddIntConstant(m, "ERR_CLSD", ERR_CLSD);
     PyModule_AddIntConstant(m, "ERR_ARG", ERR_ARG);
+
+    // lwip_ip_addr_type
+    PyModule_AddIntConstant(m, "IPADDR_TYPE_V4", IPADDR_TYPE_V4);
+    PyModule_AddIntConstant(m, "IPADDR_TYPE_V6", IPADDR_TYPE_V6);
+    PyModule_AddIntConstant(m, "IPADDR_TYPE_ANY", IPADDR_TYPE_ANY);
     return 0;
  fail:
     Py_XDECREF(m);
