@@ -69,6 +69,10 @@
 #include "lwip/priv/tcp_priv.h"
 #include "lwip/priv/tcpip_priv.h"
 
+#ifdef LWIP_HOOK_FILENAME
+#include LWIP_HOOK_FILENAME
+#endif
+
 #include <string.h>
 
 #define API_MSG_VAR_REF(name)               API_VAR_REF(name)
@@ -76,6 +80,28 @@
 #define API_MSG_VAR_ALLOC(name)             API_VAR_ALLOC(struct api_msg, MEMP_API_MSG, name, ERR_MEM)
 #define API_MSG_VAR_ALLOC_RETURN_NULL(name) API_VAR_ALLOC(struct api_msg, MEMP_API_MSG, name, NULL)
 #define API_MSG_VAR_FREE(name)              API_VAR_FREE(MEMP_API_MSG, name)
+
+#if TCP_LISTEN_BACKLOG
+/* need to allocate API message for accept so empty message pool does not result in event loss
+ * see bug #47512: MPU_COMPATIBLE may fail on empty pool */
+#define API_MSG_VAR_ALLOC_ACCEPT(msg) API_MSG_VAR_ALLOC(msg)
+#define API_MSG_VAR_FREE_ACCEPT(msg) API_MSG_VAR_FREE(msg)
+#else /* TCP_LISTEN_BACKLOG */
+#define API_MSG_VAR_ALLOC_ACCEPT(msg)
+#define API_MSG_VAR_FREE_ACCEPT(msg)
+#endif /* TCP_LISTEN_BACKLOG */
+
+#if LWIP_NETCONN_FULLDUPLEX
+#define NETCONN_RECVMBOX_WAITABLE(conn) (sys_mbox_valid(&(conn)->recvmbox) && (((conn)->flags & NETCONN_FLAG_MBOXINVALID) == 0))
+#define NETCONN_ACCEPTMBOX_WAITABLE(conn) (sys_mbox_valid(&(conn)->acceptmbox) && (((conn)->flags & (NETCONN_FLAG_MBOXCLOSED|NETCONN_FLAG_MBOXINVALID)) == 0))
+#define NETCONN_MBOX_WAITING_INC(conn) SYS_ARCH_INC(conn->mbox_threads_waiting, 1)
+#define NETCONN_MBOX_WAITING_DEC(conn) SYS_ARCH_DEC(conn->mbox_threads_waiting, 1)
+#else /* LWIP_NETCONN_FULLDUPLEX */
+#define NETCONN_RECVMBOX_WAITABLE(conn)   sys_mbox_valid(&(conn)->recvmbox)
+#define NETCONN_ACCEPTMBOX_WAITABLE(conn) (sys_mbox_valid(&(conn)->acceptmbox) && (((conn)->flags & NETCONN_FLAG_MBOXCLOSED) == 0))
+#define NETCONN_MBOX_WAITING_INC(conn)
+#define NETCONN_MBOX_WAITING_DEC(conn)
+#endif /* LWIP_NETCONN_FULLDUPLEX */
 
 static err_t netconn_close_shutdown(struct netconn *conn, u8_t how);
 
@@ -155,7 +181,7 @@ netconn_new_with_proto_and_callback(enum netconn_type t, u8_t proto, netconn_cal
 
 /**
  * @ingroup netconn_common
- * Close a netconn 'connection' and free its resources.
+ * Close a netconn 'connection' and free all its resources but not the netconn itself.
  * UDP and RAW connection are completely closed, TCP pcbs might still be in a waitstate
  * after this returns.
  *
@@ -163,7 +189,7 @@ netconn_new_with_proto_and_callback(enum netconn_type t, u8_t proto, netconn_cal
  * @return ERR_OK if the connection was deleted
  */
 err_t
-netconn_delete(struct netconn *conn)
+netconn_prepare_delete(struct netconn *conn)
 {
   err_t err;
   API_MSG_VAR_DECLARE(msg);
@@ -175,26 +201,57 @@ netconn_delete(struct netconn *conn)
 
   API_MSG_VAR_ALLOC(msg);
   API_MSG_VAR_REF(msg).conn = conn;
+#if LWIP_TCP
 #if LWIP_SO_SNDTIMEO || LWIP_SO_LINGER
   /* get the time we started, which is later compared to
      sys_now() + conn->send_timeout */
   API_MSG_VAR_REF(msg).msg.sd.time_started = sys_now();
 #else /* LWIP_SO_SNDTIMEO || LWIP_SO_LINGER */
-#if LWIP_TCP
   API_MSG_VAR_REF(msg).msg.sd.polls_left =
     ((LWIP_TCP_CLOSE_TIMEOUT_MS_DEFAULT + TCP_SLOW_INTERVAL - 1) / TCP_SLOW_INTERVAL) + 1;
-#endif /* LWIP_TCP */
 #endif /* LWIP_SO_SNDTIMEO || LWIP_SO_LINGER */
+#endif /* LWIP_TCP */
   err = netconn_apimsg(lwip_netconn_do_delconn, &API_MSG_VAR_REF(msg));
   API_MSG_VAR_FREE(msg);
 
   if (err != ERR_OK) {
     return err;
   }
-
-  netconn_free(conn);
-
   return ERR_OK;
+}
+
+/**
+ * @ingroup netconn_common
+ * Close a netconn 'connection' and free its resources.
+ * UDP and RAW connection are completely closed, TCP pcbs might still be in a waitstate
+ * after this returns.
+ *
+ * @param conn the netconn to delete
+ * @return ERR_OK if the connection was deleted
+ */
+err_t
+netconn_delete(struct netconn *conn)
+{
+  err_t err;
+
+  /* No ASSERT here because possible to get a (conn == NULL) if we got an accept error */
+  if (conn == NULL) {
+    return ERR_OK;
+  }
+
+#if LWIP_NETCONN_FULLDUPLEX
+  if (conn->flags & NETCONN_FLAG_MBOXINVALID) {
+    /* Already called netconn_prepare_delete() before */
+    err = ERR_OK;
+  } else
+#endif /* LWIP_NETCONN_FULLDUPLEX */
+  {
+    err = netconn_prepare_delete(conn);
+  }
+  if (err == ERR_OK) {
+    netconn_free(conn);
+  }
+  return err;
 }
 
 /**
@@ -433,55 +490,54 @@ netconn_accept(struct netconn *conn, struct netconn **new_conn)
     /* return pending error */
     return err;
   }
-  if (conn->flags & NETCONN_FLAG_MBOXCLOSED) {
+  if (!NETCONN_ACCEPTMBOX_WAITABLE(conn)) {
     /* don't accept if closed: this might block the application task
        waiting on acceptmbox forever! */
     return ERR_CLSD;
   }
-  if (!sys_mbox_valid(&conn->acceptmbox)) {
-    return ERR_CLSD;
-  }
 
-#if TCP_LISTEN_BACKLOG
-  /* need to allocate API message here so empty message pool does not result in event loss
-   * see bug #47512: MPU_COMPATIBLE may fail on empty pool */
-  API_MSG_VAR_ALLOC(msg);
-#endif /* TCP_LISTEN_BACKLOG */
+  API_MSG_VAR_ALLOC_ACCEPT(msg);
 
+  NETCONN_MBOX_WAITING_INC(conn);
   if (netconn_is_nonblocking(conn)) {
     if (sys_arch_mbox_tryfetch(&conn->acceptmbox, &accept_ptr) == SYS_ARCH_TIMEOUT) {
-#if TCP_LISTEN_BACKLOG
-      API_MSG_VAR_FREE(msg);
-#endif /* TCP_LISTEN_BACKLOG */
+      API_MSG_VAR_FREE_ACCEPT(msg);
+      NETCONN_MBOX_WAITING_DEC(conn);
       return ERR_WOULDBLOCK;
     }
   } else {
 #if LWIP_SO_RCVTIMEO
     if (sys_arch_mbox_fetch(&conn->acceptmbox, &accept_ptr, conn->recv_timeout) == SYS_ARCH_TIMEOUT) {
-#if TCP_LISTEN_BACKLOG
-      API_MSG_VAR_FREE(msg);
-#endif /* TCP_LISTEN_BACKLOG */
+      API_MSG_VAR_FREE_ACCEPT(msg);
+      NETCONN_MBOX_WAITING_DEC(conn);
       return ERR_TIMEOUT;
     }
 #else
     sys_arch_mbox_fetch(&conn->acceptmbox, &accept_ptr, 0);
 #endif /* LWIP_SO_RCVTIMEO*/
   }
+  NETCONN_MBOX_WAITING_DEC(conn);
+#if LWIP_NETCONN_FULLDUPLEX
+  if (conn->flags & NETCONN_FLAG_MBOXINVALID) {
+    if (lwip_netconn_is_deallocated_msg(accept_ptr)) {
+      /* the netconn has been closed from another thread */
+      API_MSG_VAR_FREE_ACCEPT(msg);
+      return ERR_CONN;
+    }
+  }
+#endif
+
   /* Register event with callback */
   API_EVENT(conn, NETCONN_EVT_RCVMINUS, 0);
 
   if (lwip_netconn_is_err_msg(accept_ptr, &err)) {
     /* a connection has been aborted: e.g. out of pcbs or out of netconns during accept */
-#if TCP_LISTEN_BACKLOG
-    API_MSG_VAR_FREE(msg);
-#endif /* TCP_LISTEN_BACKLOG */
+    API_MSG_VAR_FREE_ACCEPT(msg);
     return err;
   }
   if (accept_ptr == NULL) {
     /* connection has been aborted */
-#if TCP_LISTEN_BACKLOG
-    API_MSG_VAR_FREE(msg);
-#endif /* TCP_LISTEN_BACKLOG */
+    API_MSG_VAR_FREE_ACCEPT(msg);
     return ERR_CLSD;
   }
   newconn = (struct netconn *)accept_ptr;
@@ -529,7 +585,7 @@ netconn_recv_data(struct netconn *conn, void **new_buf, u8_t apiflags)
   *new_buf = NULL;
   LWIP_ERROR("netconn_recv: invalid conn",    (conn != NULL),    return ERR_ARG;);
 
-  if (!sys_mbox_valid(&conn->recvmbox)) {
+  if (!NETCONN_RECVMBOX_WAITABLE(conn)) {
     err_t err = netconn_err(conn);
     if (err != ERR_OK) {
       /* return pending error */
@@ -538,10 +594,13 @@ netconn_recv_data(struct netconn *conn, void **new_buf, u8_t apiflags)
     return ERR_CONN;
   }
 
+  NETCONN_MBOX_WAITING_INC(conn);
   if (netconn_is_nonblocking(conn) || (apiflags & NETCONN_DONTBLOCK) ||
       (conn->flags & NETCONN_FLAG_MBOXCLOSED) || (conn->pending_err != ERR_OK)) {
     if (sys_arch_mbox_tryfetch(&conn->recvmbox, &buf) == SYS_ARCH_TIMEOUT) {
-      err_t err = netconn_err(conn);
+      err_t err;
+      NETCONN_MBOX_WAITING_DEC(conn);
+      err = netconn_err(conn);
       if (err != ERR_OK) {
         /* return pending error */
         return err;
@@ -554,12 +613,23 @@ netconn_recv_data(struct netconn *conn, void **new_buf, u8_t apiflags)
   } else {
 #if LWIP_SO_RCVTIMEO
     if (sys_arch_mbox_fetch(&conn->recvmbox, &buf, conn->recv_timeout) == SYS_ARCH_TIMEOUT) {
+      NETCONN_MBOX_WAITING_DEC(conn);
       return ERR_TIMEOUT;
     }
 #else
     sys_arch_mbox_fetch(&conn->recvmbox, &buf, 0);
 #endif /* LWIP_SO_RCVTIMEO*/
   }
+  NETCONN_MBOX_WAITING_DEC(conn);
+#if LWIP_NETCONN_FULLDUPLEX
+  if (conn->flags & NETCONN_FLAG_MBOXINVALID) {
+    if (lwip_netconn_is_deallocated_msg(buf)) {
+      /* the netconn has been closed from another thread */
+      API_MSG_VAR_FREE_ACCEPT(msg);
+      return ERR_CONN;
+    }
+  }
+#endif
 
 #if LWIP_TCP
 #if (LWIP_UDP || LWIP_RAW)
@@ -634,16 +704,18 @@ netconn_recv_data_tcp(struct netconn *conn, struct pbuf **new_buf, u8_t apiflags
 {
   err_t err;
   struct pbuf *buf;
-#if LWIP_TCP
   API_MSG_VAR_DECLARE(msg);
 #if LWIP_MPU_COMPATIBLE
   msg = NULL;
 #endif
-#endif /* LWIP_TCP */
 
-  if (!sys_mbox_valid(&conn->recvmbox)) {
-    /* This happens when calling this function after receiving FIN */
-    return sys_mbox_valid(&conn->acceptmbox) ? ERR_CONN : ERR_CLSD;
+  if (!NETCONN_RECVMBOX_WAITABLE(conn)) {
+    /* This only happens when calling this function more than once *after* receiving FIN */
+    return ERR_CONN;
+  }
+  if (netconn_is_flag_set(conn, NETCONN_FIN_RX_PENDING)) {
+    netconn_clear_flags(conn, NETCONN_FIN_RX_PENDING);
+    goto handle_fin;
   }
 
   if (!(apiflags & NETCONN_NOAUTORCVD)) {
@@ -671,19 +743,27 @@ netconn_recv_data_tcp(struct netconn *conn, struct pbuf **new_buf, u8_t apiflags
 
   /* If we are closed, we indicate that we no longer wish to use the socket */
   if (buf == NULL) {
-    API_EVENT(conn, NETCONN_EVT_RCVMINUS, 0);
-    if (conn->pcb.ip == NULL) {
-      /* race condition: RST during recv */
-      err = netconn_err(conn);
-      if (err != ERR_OK) {
-        return err;
+    if (apiflags & NETCONN_NOFIN) {
+      /* received a FIN but the caller cannot handle it right now:
+         re-enqueue it and return "no data" */
+      netconn_set_flags(conn, NETCONN_FIN_RX_PENDING);
+      return ERR_WOULDBLOCK;
+    } else {
+handle_fin:
+      API_EVENT(conn, NETCONN_EVT_RCVMINUS, 0);
+      if (conn->pcb.ip == NULL) {
+        /* race condition: RST during recv */
+        err = netconn_err(conn);
+        if (err != ERR_OK) {
+          return err;
+        }
+        return ERR_RST;
       }
-      return ERR_RST;
+      /* RX side is closed, so deallocate the recvmbox */
+      netconn_close_shutdown(conn, NETCONN_SHUT_RD);
+      /* Don' store ERR_CLSD as conn->err since we are only half-closed */
+      return ERR_CLSD;
     }
-    /* RX side is closed, so deallocate the recvmbox */
-    netconn_close_shutdown(conn, NETCONN_SHUT_RD);
-    /* Don' store ERR_CLSD as conn->err since we are only half-closed */
-    return ERR_CLSD;
   }
   return err;
 }
@@ -1208,6 +1288,16 @@ netconn_gethostbyname(const char *name, ip_addr_t *addr)
     return ERR_ARG;
   }
 #endif
+
+#ifdef LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE
+#if LWIP_IPV4 && LWIP_IPV6
+  if (LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, dns_addrtype, &err)) {
+#else
+  if (LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE(name, addr, NETCONN_DNS_DEFAULT, &err)) {
+#endif /* LWIP_IPV4 && LWIP_IPV6 */
+    return err;
+  }
+#endif /* LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE */
 
   API_VAR_ALLOC(struct dns_api_msg, MEMP_DNS_API_MSG, msg, ERR_MEM);
 #if LWIP_MPU_COMPATIBLE

@@ -36,14 +36,14 @@
 /**
  * @defgroup snmp SNMPv2c/v3 agent
  * @ingroup apps
- * SNMPv2c and SNMPv3 compatible agent\n
- * There is also a MIB compiler and a MIB viewer in lwIP contrib repository
- * (lwip-contrib/apps/LwipMibCompiler).\n
+ * SNMPv2c and SNMPv3 compatible agent<br>
+ * There is also a MIB compiler and a MIB viewer in lwIP/contrib subdir
+ * (lwip/contrib/apps/LwipMibCompiler).<br>
  * The agent implements the most important MIB2 MIBs including IPv6 support
  * (interfaces, UDP, TCP, SNMP, ICMP, SYSTEM). IP MIB is an older version
- * without IPv6 statistics (TODO).\n
+ * without IPv6 statistics (TODO).<br>
  * Rewritten by Martin Hentschel <info@cl-soft.de> and
- * Dirk Ziegelmeier <dziegel@gmx.de>\n
+ * Dirk Ziegelmeier <dziegel@gmx.de>
  *
  * 0 Agent Capabilities
  * ====================
@@ -235,6 +235,7 @@ static struct snmp_mib const *const *snmp_mibs = default_mibs;
 void
 snmp_set_mibs(const struct snmp_mib **mibs, u8_t num_mibs)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("mibs pointer must be != NULL", (mibs != NULL));
   LWIP_ASSERT("num_mibs pointer must be != 0", (num_mibs != 0));
   snmp_mibs     = mibs;
@@ -257,6 +258,7 @@ snmp_set_mibs(const struct snmp_mib **mibs, u8_t num_mibs)
  */
 void snmp_set_device_enterprise_oid(const struct snmp_obj_id *device_enterprise_oid)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if (device_enterprise_oid == NULL) {
     snmp_device_enterprise_oid = &snmp_device_enterprise_oid_default;
   } else {
@@ -270,6 +272,7 @@ void snmp_set_device_enterprise_oid(const struct snmp_obj_id *device_enterprise_
  */
 const struct snmp_obj_id *snmp_get_device_enterprise_oid(void)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   return snmp_device_enterprise_oid;
 }
 
@@ -544,7 +547,7 @@ snmp_oid_to_ip_port(const u32_t *oid, u8_t oid_len, ip_addr_t *ip, u16_t *port)
 void
 snmp_oid_assign(struct snmp_obj_id *target, const u32_t *oid, u8_t oid_len)
 {
-  LWIP_ASSERT("oid_len <= LWIP_SNMP_OBJ_ID_LEN", oid_len <= SNMP_MAX_OBJ_ID_LEN);
+  LWIP_ASSERT("oid_len <= SNMP_MAX_OBJ_ID_LEN", oid_len <= SNMP_MAX_OBJ_ID_LEN);
 
   target->len = oid_len;
 
@@ -562,7 +565,7 @@ snmp_oid_assign(struct snmp_obj_id *target, const u32_t *oid, u8_t oid_len)
 void
 snmp_oid_prefix(struct snmp_obj_id *target, const u32_t *oid, u8_t oid_len)
 {
-  LWIP_ASSERT("target->len + oid_len <= LWIP_SNMP_OBJ_ID_LEN", (target->len + oid_len) <= SNMP_MAX_OBJ_ID_LEN);
+  LWIP_ASSERT("target->len + oid_len <= SNMP_MAX_OBJ_ID_LEN", (target->len + oid_len) <= SNMP_MAX_OBJ_ID_LEN);
 
   if (oid_len > 0) {
     /* move existing OID to make room at the beginning for OID to insert */
@@ -600,7 +603,7 @@ snmp_oid_combine(struct snmp_obj_id *target, const u32_t *oid1, u8_t oid1_len, c
 void
 snmp_oid_append(struct snmp_obj_id *target, const u32_t *oid, u8_t oid_len)
 {
-  LWIP_ASSERT("offset + oid_len <= LWIP_SNMP_OBJ_ID_LEN", (target->len + oid_len) <= SNMP_MAX_OBJ_ID_LEN);
+  LWIP_ASSERT("offset + oid_len <= SNMP_MAX_OBJ_ID_LEN", (target->len + oid_len) <= SNMP_MAX_OBJ_ID_LEN);
 
   if (oid_len > 0) {
     MEMCPY(&target->id[target->len], oid, oid_len * sizeof(u32_t));

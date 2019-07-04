@@ -50,7 +50,7 @@
 #include "lwip/netif.h"
 #include "lwip/icmp.h"
 #include "lwip/igmp.h"
-#include "lwip/raw.h"
+#include "lwip/priv/raw_priv.h"
 #include "lwip/udp.h"
 #include "lwip/priv/tcp_priv.h"
 #include "lwip/autoip.h"
@@ -154,6 +154,8 @@ ip4_route(const ip4_addr_t *dest)
 #if !LWIP_SINGLE_NETIF
   struct netif *netif;
 
+  LWIP_ASSERT_CORE_LOCKED();
+
 #if LWIP_MULTICAST_TX_OPTIONS
   /* Use administratively selected interface for multicast by default */
   if (ip4_addr_ismulticast(dest) && ip4_default_multicast_netif) {
@@ -161,8 +163,11 @@ ip4_route(const ip4_addr_t *dest)
   }
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
 
+  /* bug #54569: in case LWIP_SINGLE_NETIF=1 and LWIP_DEBUGF() disabled, the following loop is optimized away */
+  LWIP_UNUSED_ARG(dest);
+
   /* iterate through netifs */
-  for (netif = netif_list; netif != NULL; netif = netif->next) {
+  NETIF_FOREACH(netif) {
     /* is the netif up, does it have a link and a valid address? */
     if (netif_is_up(netif) && netif_is_link_up(netif) && !ip4_addr_isany_val(*netif_ip4_addr(netif))) {
       /* network mask matches? */
@@ -179,14 +184,14 @@ ip4_route(const ip4_addr_t *dest)
   }
 
 #if LWIP_NETIF_LOOPBACK && !LWIP_HAVE_LOOPIF
-  /* loopif is disabled, looopback traffic is passed through any netif */
+  /* loopif is disabled, loopback traffic is passed through any netif */
   if (ip4_addr_isloopback(dest)) {
     /* don't check for link on loopback traffic */
-    if (netif_default != NULL && netif_is_up(netif_default)) {
+    if ((netif_default != NULL) && netif_is_up(netif_default)) {
       return netif_default;
     }
     /* default netif is not up, just use any netif for loopback traffic */
-    for (netif = netif_list; netif != NULL; netif = netif->next) {
+    NETIF_FOREACH(netif) {
       if (netif_is_up(netif)) {
         return netif;
       }
@@ -237,13 +242,19 @@ ip4_canforward(struct pbuf *p)
 {
   u32_t addr = lwip_htonl(ip4_addr_get_u32(ip4_current_dest_addr()));
 
+#ifdef LWIP_HOOK_IP4_CANFORWARD
+  int ret = LWIP_HOOK_IP4_CANFORWARD(p, addr);
+  if (ret >= 0) {
+    return ret;
+  }
+#endif /* LWIP_HOOK_IP4_CANFORWARD */
+
   if (p->flags & PBUF_FLAG_LLBCAST) {
     /* don't route link-layer broadcasts */
     return 0;
   }
-  if ((p->flags & PBUF_FLAG_LLMCAST) && !IP_MULTICAST(addr)) {
-    /* don't route link-layer multicasts unless the destination address is an IP
-       multicast address */
+  if ((p->flags & PBUF_FLAG_LLMCAST) || IP_MULTICAST(addr)) {
+    /* don't route link-layer multicasts (use LWIP_HOOK_IP4_CANFORWARD instead) */
     return 0;
   }
   if (IP_EXPERIMENTAL(addr)) {
@@ -373,6 +384,7 @@ ip4_input_accept(struct netif *netif)
   /* interface is up and configured? */
   if ((netif_is_up(netif)) && (!ip4_addr_isany_val(*netif_ip4_addr(netif)))) {
     /* unicast to this interface address? */
+    printf("%d\n",netif_ip4_addr(netif)->addr);
     if (ip4_addr_cmp(ip4_current_dest_addr(), netif_ip4_addr(netif)) ||
         /* or broadcast on this interface network address? */
         ip4_addr_isbroadcast(ip4_current_dest_addr(), netif)
@@ -396,7 +408,7 @@ ip4_input_accept(struct netif *netif)
     }
 #endif /* LWIP_AUTOIP */
   }
-  return 0;
+  return 1;
 }
 
 /**
@@ -423,6 +435,11 @@ ip4_input(struct pbuf *p, struct netif *inp)
 #if IP_ACCEPT_LINK_LAYER_ADDRESSING || LWIP_IGMP
   int check_ip_src = 1;
 #endif /* IP_ACCEPT_LINK_LAYER_ADDRESSING || LWIP_IGMP */
+#if LWIP_RAW
+  raw_input_state_t raw_status;
+#endif /* LWIP_RAW */
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   IP_STATS_INC(ip.recv);
   MIB2_STATS_INC(mib2.ipinreceives);
@@ -437,6 +454,9 @@ ip4_input(struct pbuf *p, struct netif *inp)
     IP_STATS_INC(ip.drop);
     MIB2_STATS_INC(mib2.ipinhdrerrors);
     return ERR_OK;
+  }
+  else{
+      printf("not dropped");
   }
 
 #ifdef LWIP_HOOK_IP4_INPUT
@@ -623,7 +643,11 @@ ip4_input(struct pbuf *p, struct netif *inp)
       MIB2_STATS_INC(mib2.ipindiscards);
     }
     pbuf_free(p);
+    printf("not for us");
     return ERR_OK;
+  }
+  else{
+      printf("for us");
   }
   /* packet consists of multiple fragments? */
   if ((IPH_OFFSET(iphdr) & PP_HTONS(IP_OFFMASK | IP_MF)) != 0) {
@@ -679,7 +703,8 @@ ip4_input(struct pbuf *p, struct netif *inp)
 
 #if LWIP_RAW
   /* raw input did not eat the packet? */
-  if (raw_input(p, inp) == 0)
+  raw_status = raw_input(p, inp);
+  if (raw_status != RAW_INPUT_EATEN)
 #endif /* LWIP_RAW */
   {
     pbuf_remove_header(p, iphdr_hlen); /* Move to payload, no check necessary. */
@@ -697,6 +722,7 @@ ip4_input(struct pbuf *p, struct netif *inp)
 #if LWIP_TCP
       case IP_PROTO_TCP:
         MIB2_STATS_INC(mib2.ipindelivers);
+        printf("tcp_input(p, inp)");
         tcp_input(p, inp);
         break;
 #endif /* LWIP_TCP */
@@ -712,21 +738,29 @@ ip4_input(struct pbuf *p, struct netif *inp)
         break;
 #endif /* LWIP_IGMP */
       default:
+#if LWIP_RAW
+        if (raw_status == RAW_INPUT_DELIVERED) {
+          MIB2_STATS_INC(mib2.ipindelivers);
+        } else
+#endif /* LWIP_RAW */
+        {
 #if LWIP_ICMP
-        /* send ICMP destination protocol unreachable unless is was a broadcast */
-        if (!ip4_addr_isbroadcast(ip4_current_dest_addr(), netif) &&
-            !ip4_addr_ismulticast(ip4_current_dest_addr())) {
-          pbuf_header_force(p, (s16_t)iphdr_hlen); /* Move to ip header, no check necessary. */
-          icmp_dest_unreach(p, ICMP_DUR_PROTO);
-        }
+          /* send ICMP destination protocol unreachable unless is was a broadcast */
+          if (!ip4_addr_isbroadcast(ip4_current_dest_addr(), netif) &&
+              !ip4_addr_ismulticast(ip4_current_dest_addr())) {
+            pbuf_header_force(p, (s16_t)iphdr_hlen); /* Move to ip header, no check necessary. */
+            icmp_dest_unreach(p, ICMP_DUR_PROTO);
+          }
 #endif /* LWIP_ICMP */
+
+          LWIP_DEBUGF(IP_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("Unsupported transport protocol %"U16_F"\n", (u16_t)IPH_PROTO(iphdr)));
+
+          IP_STATS_INC(ip.proterr);
+          IP_STATS_INC(ip.drop);
+          MIB2_STATS_INC(mib2.ipinunknownprotos);
+        }
         pbuf_free(p);
-
-        LWIP_DEBUGF(IP_DEBUG | LWIP_DBG_LEVEL_SERIOUS, ("Unsupported transport protocol %"U16_F"\n", (u16_t)IPH_PROTO(iphdr)));
-
-        IP_STATS_INC(ip.proterr);
-        IP_STATS_INC(ip.drop);
-        MIB2_STATS_INC(mib2.ipinunknownprotos);
+        break;
     }
   }
 
@@ -831,6 +865,7 @@ ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *d
   u32_t chk_sum = 0;
 #endif /* CHECKSUM_GEN_IP_INLINE */
 
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_IP_CHECK_PBUF_REF_COUNT_FOR_TX(p);
 
   MIB2_STATS_INC(mib2.ipoutrequests);
@@ -1097,16 +1132,16 @@ ip4_debug_print(struct pbuf *p)
                          lwip_ntohs(IPH_CHKSUM(iphdr))));
   LWIP_DEBUGF(IP_DEBUG, ("+-------------------------------+\n"));
   LWIP_DEBUGF(IP_DEBUG, ("|  %3"U16_F"  |  %3"U16_F"  |  %3"U16_F"  |  %3"U16_F"  | (src)\n",
-                         ip4_addr1_16(&iphdr->src),
-                         ip4_addr2_16(&iphdr->src),
-                         ip4_addr3_16(&iphdr->src),
-                         ip4_addr4_16(&iphdr->src)));
+                         ip4_addr1_16_val(iphdr->src),
+                         ip4_addr2_16_val(iphdr->src),
+                         ip4_addr3_16_val(iphdr->src),
+                         ip4_addr4_16_val(iphdr->src)));
   LWIP_DEBUGF(IP_DEBUG, ("+-------------------------------+\n"));
   LWIP_DEBUGF(IP_DEBUG, ("|  %3"U16_F"  |  %3"U16_F"  |  %3"U16_F"  |  %3"U16_F"  | (dest)\n",
-                         ip4_addr1_16(&iphdr->dest),
-                         ip4_addr2_16(&iphdr->dest),
-                         ip4_addr3_16(&iphdr->dest),
-                         ip4_addr4_16(&iphdr->dest)));
+                         ip4_addr1_16_val(iphdr->dest),
+                         ip4_addr2_16_val(iphdr->dest),
+                         ip4_addr3_16_val(iphdr->dest),
+                         ip4_addr4_16_val(iphdr->dest)));
   LWIP_DEBUGF(IP_DEBUG, ("+-------------------------------+\n"));
 }
 #endif /* IP_DEBUG */

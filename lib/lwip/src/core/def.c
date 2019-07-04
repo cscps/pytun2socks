@@ -118,6 +118,29 @@ lwip_strnstr(const char *buffer, const char *token, size_t n)
 }
 #endif
 
+#ifndef lwip_strnistr
+/**
+ * @ingroup sys_nonstandard
+ * lwIP default implementation for strnistr() non-standard function.
+ * This can be \#defined to strnistr() depending on your platform port.
+ */
+char *
+lwip_strnistr(const char *buffer, const char *token, size_t n)
+{
+  const char *p;
+  size_t tokenlen = strlen(token);
+  if (tokenlen == 0) {
+    return LWIP_CONST_CAST(char *, buffer);
+  }
+  for (p = buffer; *p && (p + tokenlen <= buffer + n); p++) {
+    if (lwip_strnicmp(p, token, tokenlen) == 0) {
+      return LWIP_CONST_CAST(char *, p);
+    }
+  }
+  return NULL;
+}
+#endif
+
 #ifndef lwip_stricmp
 /**
  * @ingroup sys_nonstandard
@@ -183,7 +206,8 @@ lwip_strnicmp(const char *str1, const char *str2, size_t len)
         return 1;
       }
     }
-  } while (len-- && c1 != 0);
+    len--;
+  } while ((len != 0) && (c1 != 0));
   return 0;
 }
 #endif
@@ -198,10 +222,8 @@ void
 lwip_itoa(char *result, size_t bufsize, int number)
 {
   char *res = result;
-  char *tmp = result;
-  size_t res_left = bufsize;
-  size_t result_len;
-  int n = (number > 0) ? number : -number;
+  char *tmp = result + bufsize - 1;
+  int n = (number >= 0) ? number : -number;
 
   /* handle invalid bufsize */
   if (bufsize < 2) {
@@ -211,38 +233,31 @@ lwip_itoa(char *result, size_t bufsize, int number)
     return;
   }
 
-  /* ensure output string is zero terminated */
-  result[bufsize - 1] = 0;
-  result_len = 1;
-  /* create the string in a temporary buffer since we don't know how long
-     it will get */
-  tmp = &result[bufsize - 2];
-  if (n == 0) {
-    *tmp = '0';
-    tmp--;
-    result_len++;
-  }
-  while ((n != 0) && (result_len < (bufsize - 1))) {
-    char val = (char)('0' + (n % 10));
-    *tmp = val;
-    tmp--;
-    n = n / 10;
-    result_len++;
-  }
-
-  /* output sign first */
+  /* First, add sign */
   if (number < 0) {
-    *res = '-';
-    res++;
-    res_left--;
+    *res++ = '-';
   }
-  if (result_len > res_left) {
+  /* Then create the string from the end and stop if buffer full,
+     and ensure output string is zero terminated */
+  *tmp = 0;
+  while ((n != 0) && (tmp > res)) {
+    char val = (char)('0' + (n % 10));
+    tmp--;
+    *tmp = val;
+    n = n / 10;
+  }
+  if (n) {
     /* buffer is too small */
-    result[0] = '.';
-    result[1] = 0;
+    *result = 0;
     return;
   }
-  /* copy from temporary buffer to output buffer */
-  memmove(res, tmp + 1, result_len);
+  if (*tmp == 0) {
+    /* Nothing added? */
+    *res++ = '0';
+    *res++ = 0;
+    return;
+  }
+  /* move from temporary buffer to output buffer (sign is not moved) */
+  memmove(res, tmp, (size_t)((result + bufsize) - tmp));
 }
 #endif

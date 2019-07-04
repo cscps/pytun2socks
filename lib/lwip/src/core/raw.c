@@ -2,15 +2,15 @@
  * @file
  * Implementation of raw protocol PCBs for low-level handling of
  * different types of protocols besides (or overriding) those
- * already available in lwIP.\n
+ * already available in lwIP.<br>
  * See also @ref raw_raw
  *
  * @defgroup raw_raw RAW
  * @ingroup callbackstyle_api
  * Implementation of raw protocol PCBs for low-level handling of
  * different types of protocols besides (or overriding) those
- * already available in lwIP.\n
- * @see @ref raw_api
+ * already available in lwIP.<br>
+ * @see @ref api
  */
 
 /*
@@ -54,6 +54,7 @@
 #include "lwip/ip_addr.h"
 #include "lwip/netif.h"
 #include "lwip/raw.h"
+#include "lwip/priv/raw_priv.h"
 #include "lwip/stats.h"
 #include "lwip/ip6.h"
 #include "lwip/ip6_addr.h"
@@ -130,12 +131,12 @@ raw_input_local_match(struct raw_pcb *pcb, u8_t broadcast)
  *           caller).
  *
  */
-u8_t
+raw_input_state_t
 raw_input(struct pbuf *p, struct netif *inp)
 {
   struct raw_pcb *pcb, *prev;
   s16_t proto;
-  u8_t eaten = 0;
+  raw_input_state_t ret = RAW_INPUT_NONE;
   u8_t broadcast = ip_addr_isbroadcast(ip_current_dest_addr(), ip_current_netif());
 
   LWIP_UNUSED_ARG(inp);
@@ -162,21 +163,22 @@ raw_input(struct pbuf *p, struct netif *inp)
   pcb = raw_pcbs;
   /* loop through all raw pcbs until the packet is eaten by one */
   /* this allows multiple pcbs to match against the packet by design */
-  while ((eaten == 0) && (pcb != NULL)) {
+  while (pcb != NULL) {
     if ((pcb->protocol == proto) && raw_input_local_match(pcb, broadcast) &&
         (((pcb->flags & RAW_FLAGS_CONNECTED) == 0) ||
          ip_addr_cmp(&pcb->remote_ip, ip_current_src_addr()))) {
       /* receive callback function available? */
       if (pcb->recv != NULL) {
+        u8_t eaten;
 #ifndef LWIP_NOASSERT
         void *old_payload = p->payload;
 #endif
+        ret = RAW_INPUT_DELIVERED;
         /* the receive callback function did not eat the packet? */
         eaten = pcb->recv(pcb->recv_arg, pcb, p, ip_current_src_addr());
         if (eaten != 0) {
           /* receive function ate the packet */
           p = NULL;
-          eaten = 1;
           if (prev != NULL) {
             /* move the pcb to the front of raw_pcbs so that is
                found faster next time */
@@ -184,6 +186,7 @@ raw_input(struct pbuf *p, struct netif *inp)
             pcb->next = raw_pcbs;
             raw_pcbs = pcb;
           }
+          return RAW_INPUT_EATEN;
         } else {
           /* sanity-check that the receive callback did not alter the pbuf */
           LWIP_ASSERT("raw pcb recv callback altered pbuf payload pointer without eating packet",
@@ -196,7 +199,7 @@ raw_input(struct pbuf *p, struct netif *inp)
     prev = pcb;
     pcb = pcb->next;
   }
-  return eaten;
+  return ret;
 }
 
 /**
@@ -217,6 +220,7 @@ raw_input(struct pbuf *p, struct netif *inp)
 err_t
 raw_bind(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
@@ -248,6 +252,7 @@ raw_bind(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 void
 raw_bind_netif(struct raw_pcb *pcb, const struct netif *netif)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if (netif != NULL) {
     pcb->netif_idx = netif_get_index(netif);
   } else {
@@ -272,6 +277,7 @@ raw_bind_netif(struct raw_pcb *pcb, const struct netif *netif)
 err_t
 raw_connect(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if ((pcb == NULL) || (ipaddr == NULL)) {
     return ERR_VAL;
   }
@@ -297,6 +303,7 @@ raw_connect(struct raw_pcb *pcb, const ip_addr_t *ipaddr)
 void
 raw_disconnect(struct raw_pcb *pcb)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   /* reset remote address association */
 #if LWIP_IPV4 && LWIP_IPV6
   if (IP_IS_ANY_TYPE_VAL(pcb->local_ip)) {
@@ -326,6 +333,7 @@ raw_disconnect(struct raw_pcb *pcb)
 void
 raw_recv(struct raw_pcb *pcb, raw_recv_fn recv, void *recv_arg)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   /* remember recv() callback and user data */
   pcb->recv = recv;
   pcb->recv_arg = recv_arg;
@@ -416,6 +424,8 @@ raw_sendto_if_src(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
   struct pbuf *q; /* q will be sent down the stack */
   u16_t header_size;
   u8_t ttl;
+
+  LWIP_ASSERT_CORE_LOCKED();
 
   if ((pcb == NULL) || (dst_ip == NULL) || (netif == NULL) || (src_ip == NULL) ||
       !IP_ADDR_PCB_VERSION_MATCH(pcb, src_ip) || !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
@@ -551,6 +561,7 @@ void
 raw_remove(struct raw_pcb *pcb)
 {
   struct raw_pcb *pcb2;
+  LWIP_ASSERT_CORE_LOCKED();
   /* pcb to be removed is first in list? */
   if (raw_pcbs == pcb) {
     /* make list start at 2nd pcb */
@@ -586,6 +597,7 @@ raw_new(u8_t proto)
   struct raw_pcb *pcb;
 
   LWIP_DEBUGF(RAW_DEBUG | LWIP_DBG_TRACE, ("raw_new\n"));
+  LWIP_ASSERT_CORE_LOCKED();
 
   pcb = (struct raw_pcb *)memp_malloc(MEMP_RAW_PCB);
   /* could allocate RAW PCB? */
@@ -622,6 +634,7 @@ struct raw_pcb *
 raw_new_ip_type(u8_t type, u8_t proto)
 {
   struct raw_pcb *pcb;
+  LWIP_ASSERT_CORE_LOCKED();
   pcb = raw_new(proto);
 #if LWIP_IPV4 && LWIP_IPV6
   if (pcb != NULL) {

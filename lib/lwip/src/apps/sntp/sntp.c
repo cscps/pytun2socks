@@ -42,6 +42,8 @@
  * This is simple "SNTP" client for the lwIP raw API.
  * It is a minimal implementation of SNTPv4 as specified in RFC 4330.
  *
+ * You need to increase MEMP_NUM_SYS_TIMEOUT by one if you use SNTP!
+ *
  * For a list of some public NTP servers, see this link:
  * http://support.ntp.org/bin/view/Servers/NTPPoolServers
  *
@@ -112,7 +114,7 @@
 #define SNTP_OFFSET_TRANSMIT_TIME   40
 
 /* Number of seconds between 1970 and Feb 7, 2036 06:28:16 UTC (epoch 1) */
-#define DIFF_SEC_1970_2036          ((s32_t)2085978496L)
+#define DIFF_SEC_1970_2036          ((u32_t)2085978496L)
 
 /** Convert NTP timestamp fraction to microseconds.
  */
@@ -228,15 +230,22 @@ static struct udp_pcb *sntp_pcb;
 /** Names/Addresses of servers */
 struct sntp_server {
 #if SNTP_SERVER_DNS
-  char *name;
+  const char *name;
 #endif /* SNTP_SERVER_DNS */
   ip_addr_t addr;
+#if SNTP_MONITOR_SERVER_REACHABILITY
+  /** Reachability shift register as described in RFC 5905 */
+  u8_t reachability;
+#endif /* SNTP_MONITOR_SERVER_REACHABILITY */
+#if SNTP_SUPPORT_MULTIPLE_SERVERS
+  u8_t kod_received;
+#endif
 };
 static struct sntp_server sntp_servers[SNTP_MAX_SERVERS];
 
-#if SNTP_GET_SERVERS_FROM_DHCP
+#if SNTP_GET_SERVERS_FROM_DHCP || SNTP_GET_SERVERS_FROM_DHCPV6
 static u8_t sntp_set_servers_from_dhcp;
-#endif /* SNTP_GET_SERVERS_FROM_DHCP */
+#endif /* SNTP_GET_SERVERS_FROM_DHCP || SNTP_GET_SERVERS_FROM_DHCPV6 */
 #if SNTP_SUPPORT_MULTIPLE_SERVERS
 /** The currently used server (initialized to 0) */
 static u8_t sntp_current_server;
@@ -270,7 +279,7 @@ static const char *
 sntp_format_time(s32_t sec)
 {
   time_t ut;
-  ut = (time_t)((time_t)sec + (time_t)DIFF_SEC_1970_2036);
+  ut = (u32_t)((u32_t)sec + DIFF_SEC_1970_2036);
   return ctime(&ut);
 }
 #endif /* LWIP_DEBUG && !sntp_format_time */
@@ -404,6 +413,10 @@ sntp_try_next_server(void *arg)
     if (sntp_current_server >= SNTP_MAX_SERVERS) {
       sntp_current_server = 0;
     }
+    if (sntp_servers[sntp_current_server].kod_received) {
+      /* KOD received, don't use this server */
+      continue;
+    }
     if (!ip_addr_isany(&sntp_servers[sntp_current_server].addr)
 #if SNTP_SERVER_DNS
         || (sntp_servers[sntp_current_server].name != NULL)
@@ -422,9 +435,18 @@ sntp_try_next_server(void *arg)
   sntp_current_server = old_server;
   sntp_retry(NULL);
 }
+
+static void
+sntp_kod_try_next_server(void *arg)
+{
+  sntp_servers[sntp_current_server].kod_received = 1;
+  sntp_try_next_server(arg);
+}
+
 #else /* SNTP_SUPPORT_MULTIPLE_SERVERS */
 /* Always retry on error if only one server is supported */
-#define sntp_try_next_server    sntp_retry
+#define sntp_try_next_server     sntp_retry
+#define sntp_kod_try_next_server sntp_retry
 #endif /* SNTP_SUPPORT_MULTIPLE_SERVERS */
 
 /** UDP recv callback for the sntp pcb */
@@ -499,6 +521,10 @@ sntp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
     /* correct packet received: process it it */
     sntp_process(&timestamps);
 
+#if SNTP_MONITOR_SERVER_REACHABILITY
+    /* indicate that server responded */
+    sntp_servers[sntp_current_server].reachability |= 1;
+#endif /* SNTP_MONITOR_SERVER_REACHABILITY */
     /* Set up timeout for next request (only if poll response was received)*/
     if (sntp_opmode == SNTP_OPMODE_POLL) {
       u32_t sntp_update_delay;
@@ -517,7 +543,7 @@ sntp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr,
     /* KOD errors are only processed in case of an explicit poll response */
     if (sntp_opmode == SNTP_OPMODE_POLL) {
       /* Kiss-of-death packet. Use another server or increase UPDATE_DELAY. */
-      sntp_try_next_server(NULL);
+      sntp_kod_try_next_server(NULL);
     }
   } else {
     /* ignore any broken packet, poll mode: retry after timeout to avoid flooding */
@@ -532,6 +558,9 @@ static void
 sntp_send_request(const ip_addr_t *server_addr)
 {
   struct pbuf *p;
+
+  LWIP_ASSERT("server_addr != NULL", server_addr != NULL);
+
   p = pbuf_alloc(PBUF_TRANSPORT, SNTP_MSG_LEN, PBUF_RAM);
   if (p != NULL) {
     struct sntp_msg *sntpmsg = (struct sntp_msg *)p->payload;
@@ -542,11 +571,15 @@ sntp_send_request(const ip_addr_t *server_addr)
     udp_sendto(sntp_pcb, p, server_addr, SNTP_PORT);
     /* free the pbuf after sending it */
     pbuf_free(p);
+#if SNTP_MONITOR_SERVER_REACHABILITY
+    /* indicate new packet has been sent */
+    sntp_servers[sntp_current_server].reachability <<= 1;
+#endif /* SNTP_MONITOR_SERVER_REACHABILITY */
     /* set up receive timeout: try next server or retry on timeout */
     sys_timeout((u32_t)SNTP_RECV_TIMEOUT, sntp_try_next_server, NULL);
 #if SNTP_CHECK_RESPONSE >= 1
     /* save server address to verify it in sntp_recv */
-    ip_addr_set(&sntp_last_server_address, server_addr);
+    ip_addr_copy(sntp_last_server_address, *server_addr);
 #endif /* SNTP_CHECK_RESPONSE >= 1 */
   } else {
     LWIP_DEBUGF(SNTP_DEBUG_SERIOUS, ("sntp_send_request: Out of memory, trying again in %"U32_F" ms\n",
@@ -569,6 +602,7 @@ sntp_dns_found(const char *hostname, const ip_addr_t *ipaddr, void *arg)
   if (ipaddr != NULL) {
     /* Address resolved, send request */
     LWIP_DEBUGF(SNTP_DEBUG_STATE, ("sntp_dns_found: Server address resolved, sending request\n"));
+    sntp_servers[sntp_current_server].addr = *ipaddr;
     sntp_send_request(ipaddr);
   } else {
     /* DNS resolving failed -> try another server */
@@ -631,6 +665,9 @@ sntp_request(void *arg)
 void
 sntp_init(void)
 {
+  /* LWIP_ASSERT_CORE_LOCKED(); is checked by udp_new() */
+  LWIP_DEBUGF(SNTP_DEBUG_TRACE, ("sntp_init: SNTP initialised\n"));
+
 #ifdef SNTP_SERVER_ADDRESS
 #if SNTP_SERVER_DNS
   sntp_setservername(0, SNTP_SERVER_ADDRESS);
@@ -667,7 +704,14 @@ sntp_init(void)
 void
 sntp_stop(void)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if (sntp_pcb != NULL) {
+#if SNTP_MONITOR_SERVER_REACHABILITY
+    u8_t i;
+    for (i = 0; i < SNTP_MAX_SERVERS; i++) {
+      sntp_servers[i].reachability = 0;
+    }
+#endif /* SNTP_MONITOR_SERVER_REACHABILITY */
     sys_untimeout(sntp_request, NULL);
     sys_untimeout(sntp_try_next_server, NULL);
     udp_remove(sntp_pcb);
@@ -692,6 +736,7 @@ u8_t sntp_enabled(void)
 void
 sntp_setoperatingmode(u8_t operating_mode)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("Invalid operating mode", operating_mode <= SNTP_OPMODE_LISTENONLY);
   LWIP_ASSERT("Operating mode must not be set while SNTP client is running", sntp_pcb == NULL);
   sntp_opmode = operating_mode;
@@ -707,7 +752,24 @@ sntp_getoperatingmode(void)
   return sntp_opmode;
 }
 
-#if SNTP_GET_SERVERS_FROM_DHCP
+#if SNTP_MONITOR_SERVER_REACHABILITY
+/**
+ * @ingroup sntp
+ * Gets the server reachability shift register as described in RFC 5905.
+ *
+ * @param idx the index of the NTP server
+ */
+u8_t
+sntp_getreachability(u8_t idx)
+{
+  if (idx < SNTP_MAX_SERVERS) {
+    return sntp_servers[idx].reachability;
+  }
+  return 0;
+}
+#endif /* SNTP_MONITOR_SERVER_REACHABILITY */
+
+#if SNTP_GET_SERVERS_FROM_DHCP || SNTP_GET_SERVERS_FROM_DHCPV6
 /**
  * Config SNTP server handling by IP address, name, or DHCP; clear table
  * @param set_servers_from_dhcp enable or disable getting server addresses from dhcp
@@ -716,11 +778,12 @@ void
 sntp_servermode_dhcp(int set_servers_from_dhcp)
 {
   u8_t new_mode = set_servers_from_dhcp ? 1 : 0;
+  LWIP_ASSERT_CORE_LOCKED();
   if (sntp_set_servers_from_dhcp != new_mode) {
     sntp_set_servers_from_dhcp = new_mode;
   }
 }
-#endif /* SNTP_GET_SERVERS_FROM_DHCP */
+#endif /* SNTP_GET_SERVERS_FROM_DHCP || SNTP_GET_SERVERS_FROM_DHCPV6 */
 
 /**
  * @ingroup sntp
@@ -732,9 +795,13 @@ sntp_servermode_dhcp(int set_servers_from_dhcp)
 void
 sntp_setserver(u8_t idx, const ip_addr_t *server)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if (idx < SNTP_MAX_SERVERS) {
     if (server != NULL) {
       sntp_servers[idx].addr = (*server);
+#if SNTP_SUPPORT_MULTIPLE_SERVERS
+      sntp_servers[idx].kod_received = 0;
+#endif
     } else {
       ip_addr_set_zero(&sntp_servers[idx].addr);
     }
@@ -748,8 +815,8 @@ sntp_setserver(u8_t idx, const ip_addr_t *server)
 /**
  * Initialize one of the NTP servers by IP address, required by DHCP
  *
- * @param numdns the index of the NTP server to set must be < SNTP_MAX_SERVERS
- * @param dnsserver IP address of the NTP server to set
+ * @param num the index of the NTP server to set must be < SNTP_MAX_SERVERS
+ * @param server IP address of the NTP server to set
  */
 void
 dhcp_set_ntp_servers(u8_t num, const ip4_addr_t *server)
@@ -771,6 +838,33 @@ dhcp_set_ntp_servers(u8_t num, const ip4_addr_t *server)
 }
 #endif /* LWIP_DHCP && SNTP_GET_SERVERS_FROM_DHCP */
 
+#if LWIP_IPV6_DHCP6 && SNTP_GET_SERVERS_FROM_DHCPV6
+/**
+ * Initialize one of the NTP servers by IP address, required by DHCPV6
+ *
+ * @param num the number of NTP server addresses to set must be < SNTP_MAX_SERVERS
+ * @param server array of IP address of the NTP servers to set
+ */
+void
+dhcp6_set_ntp_servers(u8_t num_ntp_servers, ip_addr_t* ntp_server_addrs)
+{
+  LWIP_DEBUGF(SNTP_DEBUG_TRACE, ("sntp: %s %u NTP server(s) via DHCPv6\n",
+                                 (sntp_set_servers_from_dhcp ? "Got" : "Rejected"),
+                                 num_ntp_servers));
+  if (sntp_set_servers_from_dhcp && num_ntp_servers) {
+    u8_t i;
+    for (i = 0; (i < num_ntp_servers) && (i < SNTP_MAX_SERVERS); i++) {
+      LWIP_DEBUGF(SNTP_DEBUG_TRACE, ("sntp: NTP server %u: %s\n",
+                                     i, ipaddr_ntoa(&ntp_server_addrs[i])));
+      sntp_setserver(i, &ntp_server_addrs[i]);
+    }
+    for (i = num_ntp_servers; i < SNTP_MAX_SERVERS; i++) {
+      sntp_setserver(i, NULL);
+    }
+  }
+}
+#endif /* LWIP_DHCPv6 && SNTP_GET_SERVERS_FROM_DHCPV6 */
+
 /**
  * @ingroup sntp
  * Obtain one of the currently configured by IP address (or DHCP) NTP servers
@@ -788,29 +882,54 @@ sntp_getserver(u8_t idx)
   return IP_ADDR_ANY;
 }
 
+/**
+ * @ingroup sntp
+ * Check if a Kiss-of-Death has been received from this server (only valid for
+ * SNTP_MAX_SERVERS > 1).
+ *
+ * @param idx the index of the NTP server
+ * @return 1 if a KoD has been received, 0 if not.
+ */
+u8_t
+sntp_getkodreceived(u8_t idx)
+{
+#if SNTP_SUPPORT_MULTIPLE_SERVERS
+  if (idx < SNTP_MAX_SERVERS) {
+    return sntp_servers[idx].kod_received;
+  }
+#else
+  LWIP_UNUSED_ARG(idx);
+#endif
+  return 0;
+}
+
 #if SNTP_SERVER_DNS
 /**
  * Initialize one of the NTP servers by name
  *
- * @param numdns the index of the NTP server to set must be < SNTP_MAX_SERVERS
- * @param dnsserver DNS name of the NTP server to set, to be resolved at contact time
+ * @param idx the index of the NTP server to set must be < SNTP_MAX_SERVERS
+ * @param server DNS name of the NTP server to set, to be resolved at contact time
  */
 void
-sntp_setservername(u8_t idx, char *server)
+sntp_setservername(u8_t idx, const char *server)
 {
+  LWIP_ASSERT_CORE_LOCKED();
   if (idx < SNTP_MAX_SERVERS) {
     sntp_servers[idx].name = server;
+#if SNTP_SUPPORT_MULTIPLE_SERVERS
+    sntp_servers[idx].kod_received = 0;
+#endif
   }
 }
 
 /**
  * Obtain one of the currently configured by name NTP servers.
  *
- * @param numdns the index of the NTP server
+ * @param idx the index of the NTP server
  * @return IP address of the indexed NTP server or NULL if the NTP
  *         server has not been configured by name (or at all)
  */
-char *
+const char *
 sntp_getservername(u8_t idx)
 {
   if (idx < SNTP_MAX_SERVERS) {
