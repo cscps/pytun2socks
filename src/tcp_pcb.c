@@ -14,6 +14,11 @@ PyObject* func_name(PyObject* self, void* _){\
     return PyLong_FromLong(p->tcp_pcb->attr_name);\
 }
 
+PyObject* pylwip_tcp_pcb_freed(PyObject* self, void* _){
+    struct pylwip_tcp_pcb *p = (struct pylwip_tcp_pcb *) self;
+    return PyLong_FromLong(p->freed);
+}
+
 #define pylwip_tcp_pcb_set_port(func_name, attr_name) \
 int func_name(PyObject* self, PyObject *value, void *_){\
     if(!PyLong_Check(value)){\
@@ -29,7 +34,10 @@ int func_name(PyObject* self, PyObject *value, void *_){\
 #define pylwip_tcp_pcb_get_ip(func_name, attr_name) \
 PyObject* func_name(PyObject* self, void* _){\
     struct pylwip_tcp_pcb *p = (struct pylwip_tcp_pcb *) self;\
-    assert(!p->freed);\
+    if (p->freed){\
+        PyErr_SetString(PyExc_AttributeError, "get addr from freed pcb object is not permitted");\
+        return NULL;\
+    }\
     struct pylwip_ip_addr_t *py_ip_addr = PyObject_New(struct pylwip_ip_addr_t, &IpAddrT_Type);\
     py_ip_addr->ip_addr = p->tcp_pcb->attr_name;\
     return (PyObject *) py_ip_addr;\
@@ -65,22 +73,38 @@ static PyGetSetDef tcp_pcb_prop[] =
                 {"local_ip", tcp_pcb_get_local_ip, tcp_pcb_set_local_ip, NULL, NULL},
                 {"remote_ip", tcp_pcb_get_remote_ip, tcp_pcb_set_remote_ip, NULL, NULL},
                 {"remote_port", tcp_pcb_get_remote_port, tcp_pcb_set_remote_port, NULL, NULL},
+                {"freed", pylwip_tcp_pcb_freed, NULL, NULL, NULL},
                 {NULL, NULL, NULL, NULL, NULL}
         };
 
 void tcp_pcb_dealloc(PyObject* self){
     struct pylwip_tcp_pcb* pcb = (struct pylwip_tcp_pcb*)self;
-    printf("%p tcp_pcb dealloc, lwip pcb: %p\n", pcb, pcb->tcp_pcb);
-    assert(!pcb->freed);
-
-    Py_XDECREF(pcb->tcp_pcb->callback_arg);
-    free(pcb->tcp_pcb);
+    printf("-- %p tcp_pcb dealloc, lwip pcb: %p\n", pcb, pcb->tcp_pcb);
+    // the python object shouldn't be freed before
+    assert(pcb->freed != 1);
     pcb->freed = 1;
 
     Py_XDECREF(pcb->accept);
     Py_XDECREF(pcb->recv);
+    pcb->accept = NULL;
+    pcb->recv = NULL;
     self->ob_type->tp_free(self);
 }
+struct tcp_ext_arg_callbacks pylwip_ext_args_callbacks = {
+        .destroy = pcb_destroy,
+        .passive_open = pcb_passive_open
+};
+
+err_t pcb_passive_open(u8_t id, struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb){
+    return ERR_OK;
+};
+void pcb_destroy (u8_t id, void *data){
+    struct pylwip_tcp_pcb* tcp_pcb = data;
+    assert(tcp_pcb && !tcp_pcb->freed);
+    tcp_pcb->freed = 2;
+    printf("pcb_destroy called: %p\n", data);
+    Py_XDECREF(tcp_pcb->tcp_pcb->callback_arg);
+};
 
 
 PyTypeObject TcpPcb_Type = {

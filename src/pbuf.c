@@ -4,7 +4,8 @@
 
 PyObject* pylwip_pbuf_get_payload(PyObject* self, void* _){
     struct pylwip_pbuf *p = (struct pylwip_pbuf *) self;
-    return PyBytes_FromStringAndSize(p->pbuf.payload, p->pbuf.tot_len);
+//    printf("%p payload: %d\n", self, ((char*)p->pbuf->payload)[0]);
+    return PyBytes_FromStringAndSize(p->pbuf->payload, p->pbuf->tot_len);
 }
 
 
@@ -21,7 +22,10 @@ static PyGetSetDef pbuf_prop[] =
 
 void pbuf_dealloc(PyObject* self){
     struct pylwip_pbuf* pbuf = (struct pylwip_pbuf*)self;
-    printf("%p pbuf dealloc\n", pbuf);
+
+//    printf("%p pbuf dealloc, %p\n", pbuf, pbuf->pbuf);
+    // free the chain of pbuf after current one
+    pbuf_free(pbuf->pbuf);
     self->ob_type->tp_free(self);
 }
 
@@ -44,8 +48,7 @@ pylwip_pbuf_alloc(PyObject *self, PyObject *args)
     };
     struct pbuf* p = pbuf_alloc(PBUF_RAW, len, PBUF_POOL);
     struct pylwip_pbuf *new_obj = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
-    new_obj->pbuf = *p;
-    free(p);
+    new_obj->pbuf = p;
     return (PyObject *) new_obj;
 
 }
@@ -59,7 +62,8 @@ pylwip_pbuf_take(PyObject *self, PyObject *args)
     if (PyArg_ParseTuple(args, "OOl", &buf, &data, &len) < 0){
         return NULL;
     };
-    int res = pbuf_take(&buf->pbuf, ((PyBytesObject*)data)->ob_sval, len);
+    int res = pbuf_take(buf->pbuf, ((PyBytesObject*)data)->ob_sval, len);
+//    printf("%p take: %c\n", buf, ((char*)buf->pbuf->payload)[0]);
     return PyLong_FromLong(res);
 }
 

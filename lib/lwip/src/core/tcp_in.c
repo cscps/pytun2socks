@@ -809,7 +809,6 @@ tcp_process(struct tcp_pcb *pcb)
   u8_t acceptable = 0;
   err_t err;
 
-  printf("tcp process");
   err = ERR_OK;
 
   LWIP_ASSERT("tcp_process: invalid pcb", pcb != NULL);

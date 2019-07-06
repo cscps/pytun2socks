@@ -384,7 +384,6 @@ ip4_input_accept(struct netif *netif)
   /* interface is up and configured? */
   if ((netif_is_up(netif)) && (!ip4_addr_isany_val(*netif_ip4_addr(netif)))) {
     /* unicast to this interface address? */
-    printf("%d\n",netif_ip4_addr(netif)->addr);
     if (ip4_addr_cmp(ip4_current_dest_addr(), netif_ip4_addr(netif)) ||
         /* or broadcast on this interface network address? */
         ip4_addr_isbroadcast(ip4_current_dest_addr(), netif)
@@ -454,9 +453,6 @@ ip4_input(struct pbuf *p, struct netif *inp)
     IP_STATS_INC(ip.drop);
     MIB2_STATS_INC(mib2.ipinhdrerrors);
     return ERR_OK;
-  }
-  else{
-      printf("not dropped");
   }
 
 #ifdef LWIP_HOOK_IP4_INPUT
@@ -643,11 +639,7 @@ ip4_input(struct pbuf *p, struct netif *inp)
       MIB2_STATS_INC(mib2.ipindiscards);
     }
     pbuf_free(p);
-    printf("not for us");
     return ERR_OK;
-  }
-  else{
-      printf("for us");
   }
   /* packet consists of multiple fragments? */
   if ((IPH_OFFSET(iphdr) & PP_HTONS(IP_OFFMASK | IP_MF)) != 0) {
@@ -722,7 +714,6 @@ ip4_input(struct pbuf *p, struct netif *inp)
 #if LWIP_TCP
       case IP_PROTO_TCP:
         MIB2_STATS_INC(mib2.ipindelivers);
-        printf("tcp_input(p, inp)");
         tcp_input(p, inp);
         break;
 #endif /* LWIP_TCP */

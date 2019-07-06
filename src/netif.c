@@ -9,14 +9,16 @@ err_t output_wrapper(struct netif *netif, struct pbuf *p,
     struct pylwip_netif* py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
     struct pylwip_pbuf *py_pbuf = PyObject_New(struct pylwip_pbuf, &Pbuf_Type);
     struct pylwip_ip4_addr_t *py_ip_addr = PyObject_New(struct pylwip_ip4_addr_t, &Ip4AddrT_Type);
-    py_pbuf->pbuf = *p;
+    // attention, pbuf p is owned by the lwip
+    struct pbuf* pbuf = pbuf_clone(PBUF_RAW, PBUF_POOL, p);
+    py_pbuf->pbuf = pbuf;
     py_ip_addr->ip4_addr = *ipaddr;
     PyObject *args = PyTuple_Pack(3, py_netif, py_pbuf, py_ip_addr);
     PyObject* result = PyObject_Call((PyObject *) py_netif->output, args, NULL);
     Py_XDECREF(args);
     Py_XDECREF(py_pbuf);
     Py_XDECREF(py_ip_addr);
-    if (!result){
+    if (!result || !PyLong_Check(result)){
         PyErr_Print();
         return ERR_ABRT;
     }
@@ -31,19 +33,20 @@ err_t output_wrapper(struct netif *netif, struct pbuf *p,
 }
 
 err_t input_wrapper(struct pbuf *p, struct netif *netif) {
-    struct pylwip_netif *py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
-    struct pylwip_pbuf *py_pbuf = (struct pylwip_pbuf *) ((char*)p - offsetof(struct pylwip_pbuf, pbuf));
-    PyObject *args = PyTuple_Pack(2, py_netif, py_pbuf);
-    PyObject *result = PyObject_Call(py_netif->input, args, NULL);
-    Py_XDECREF(args);
-    if (!result || !PyLong_Check(result)) {
-        PyErr_SetString(PyExc_AttributeError, "bad return value");
-        Py_XDECREF(result);
-        return ERR_ARG;
-    }
-    err_t t = (err_t) PyLong_AsLong(result);
-    Py_XDECREF(result);
-    return t;
+//    struct pylwip_netif *py_netif = (struct pylwip_netif *) NetifToPyLWIPNetIf(netif);
+//    struct pylwip_pbuf *py_pbuf = (struct pylwip_pbuf *) ((char*)p - offsetof(struct pylwip_pbuf, pbuf));
+//    PyObject *args = PyTuple_Pack(2, py_pbuf, py_netif);
+//    PyObject *result = PyObject_Call(py_netif->input, args, NULL);
+//    Py_XDECREF(args);
+//    if (!result || !PyLong_Check(result)) {
+//        PyErr_SetString(PyExc_AttributeError, "bad return value");
+//        Py_XDECREF(result);
+//        return ERR_ARG;
+//    }
+//    err_t t = (err_t) PyLong_AsLong(result);
+//    Py_XDECREF(result);
+//    return t;
+    return ERR_OK;
 }
 
 err_t init_wrapper(struct netif *netif) {
@@ -122,11 +125,12 @@ pylwip_netif_add(PyObject *self, PyObject *args, PyObject* kw){
     netif->init = (PyFunctionObject *) netif_init_func;
     Py_XINCREF(netif_input_func);
     Py_XINCREF(netif_init_func);
-    err_t r = netif_add(&netif->netif, &ipaddr->ip4_addr, &netmask->ip4_addr, &gw->ip4_addr,
+    struct netif *r = netif_add(&netif->netif, &ipaddr->ip4_addr, &netmask->ip4_addr, &gw->ip4_addr,
                         NULL, init_wrapper, input_wrapper);
     if (!r){
         return NULL;
     }
+    assert(&netif->netif == r);
     Py_RETURN_NONE;
 }
 
