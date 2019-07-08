@@ -218,7 +218,6 @@ pylwip_tcp_accept_wrapper(void *arg, struct tcp_pcb *newpcb, err_t err){
     assert(py_pcb_listen);
     assert(py_pcb_listen->tcp_pcb_listen == newpcb->listener);
     assert(!py_pcb_listen->freed);
-    PyCheckPcb(py_pcb_listen);
     PyFunctionObject* func = py_pcb_listen->accept;
 
     new_pylwip_tcp_pcb(new_obj, newpcb)
@@ -226,11 +225,14 @@ pylwip_tcp_accept_wrapper(void *arg, struct tcp_pcb *newpcb, err_t err){
     // TODO listen pcb should also do this?
     newpcb->errf = pylwip_tcp_err_wrapper;
 
-    PyObject *args = PyTuple_Pack(3, Py_None, new_obj, PyLong_FromLong(err));
+    PyObject* py_err = PyLong_FromLong(err);
+    PyObject *args = PyTuple_Pack(3, Py_None, new_obj, py_err);
     PyObject* result = PyObject_Call((PyObject *) func, args, NULL);
     if (!result || !PyLong_Check(result)){
         Py_XDECREF(args);
         Py_XDECREF(result);
+        Py_XDECREF(new_obj);
+        Py_XDECREF(py_err);
         PyErr_Print();
         return ERR_ABRT;
     }
@@ -238,6 +240,7 @@ pylwip_tcp_accept_wrapper(void *arg, struct tcp_pcb *newpcb, err_t err){
     Py_XDECREF(args);
     Py_XDECREF(new_obj);
     Py_XDECREF(result);
+    Py_XDECREF(py_err);
     return r;
 }
 

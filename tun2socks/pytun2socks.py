@@ -51,13 +51,16 @@ class Tun2Socks():
         """
         while True:
             await asyncio.sleep(0.5)
-            self.lwip.tmr()
+            try:
+                self.lwip.tmr()
+            except Exception as e:
+                _logger.exception(e)
+                _logger.error("error when tmr")
 
     def _poll_data(self):
         try:
             self.conn_handler.lwip_write_ask()
         except Exception as e:
-            _logger.error("error when tmr")
             _logger.exception(e)
 
     def _start_write(self):

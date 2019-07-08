@@ -66,6 +66,10 @@ class ConnectionHandler:
         r.add_done_callback(fn)
 
     def lwip_tcp_recv(self, pcb, data):
+        if pcb not in self.pcb_socket:
+            _logger.debug("recv from lwip, but socket side is closed")
+            self._lwip_write_ask(pcb, b"")
+            return
         sock = self.pcb_socket[pcb]
         asyncio.run_coroutine_threadsafe(self.loop.sock_sendall(sock, data),
                                          self.loop)
