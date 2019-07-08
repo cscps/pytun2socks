@@ -86,8 +86,10 @@ void tcp_pcb_dealloc(PyObject* self){
 
     Py_XDECREF(pcb->accept);
     Py_XDECREF(pcb->recv);
+    Py_XDECREF(pcb->sent);
     pcb->accept = NULL;
     pcb->recv = NULL;
+    pcb->sent = NULL;
     self->ob_type->tp_free(self);
 }
 struct tcp_ext_arg_callbacks pylwip_ext_args_callbacks = {

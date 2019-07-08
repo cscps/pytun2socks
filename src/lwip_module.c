@@ -244,6 +244,32 @@ pylwip_tcp_accept_wrapper(void *arg, struct tcp_pcb *newpcb, err_t err){
     return r;
 }
 
+static err_t
+pylwip_tcp_sent_wrapper(void *arg, struct tcp_pcb *tpcb, u16_t len){
+    struct pylwip_tcp_pcb* py_pcb = (struct pylwip_tcp_pcb*)tpcb->callback_arg;
+    PyFunctionObject* func = py_pcb->sent;
+    if(!func){
+        printf("no tcp_sent func\n");
+        return ERR_OK;
+    }
+
+    PyObject* py_len = PyLong_FromLong(len);
+    PyObject *args = PyTuple_Pack(3, Py_None, py_pcb, py_len);
+    PyObject* result = PyObject_Call((PyObject *) func, args, NULL);
+    if (!result || !PyLong_Check(result)){
+        Py_XDECREF(args);
+        Py_XDECREF(result);
+        Py_XDECREF(py_len);
+        PyErr_Print();
+        return ERR_ABRT;
+    }
+    err_t r = (err_t) PyLong_AsLong(result);
+    Py_XDECREF(args);
+    Py_XDECREF(py_len);
+    Py_XDECREF(result);
+    return r;
+}
+
 
 static PyObject *
 pylwip_tcp_accept(PyObject *self, PyObject *args)
@@ -257,6 +283,23 @@ pylwip_tcp_accept(PyObject *self, PyObject *args)
     Py_XDECREF(py_pcb_listen->accept);
     py_pcb_listen->accept = (PyFunctionObject *) func;
     tcp_accept((struct tcp_pcb *) py_pcb_listen->tcp_pcb_listen, pylwip_tcp_accept_wrapper);
+    Py_XINCREF(func);
+    Py_XINCREF(Py_None);
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+pylwip_tcp_sent(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* py_pcb=NULL;
+    PyObject *func;
+    if (PyArg_ParseTuple(args, "OO", &py_pcb, &func) < 0){
+        return NULL;
+    };
+    PyCheckPcb(py_pcb);
+    Py_XDECREF(py_pcb->sent);
+    py_pcb->sent = (PyFunctionObject *) func;
+    tcp_sent(py_pcb->tcp_pcb, pylwip_tcp_sent_wrapper);
     Py_XINCREF(func);
     Py_XINCREF(Py_None);
     Py_RETURN_NONE;
@@ -485,6 +528,8 @@ static PyMethodDef pylwip_methods[] = {
             PyDoc_STR("tcp_recvd(pcb, len) -> None")},
     {"tcp_accept",             (PyCFunction)pylwip_tcp_accept,         METH_VARARGS,
             PyDoc_STR("tcp_accept(tcp_pcb) -> int")},
+    {"tcp_sent",             (PyCFunction)pylwip_tcp_sent,         METH_VARARGS,
+            PyDoc_STR("tcp_sent(arg, pcb, len) -> int")},
     {"tcp_write",             (PyCFunction)pylwip_tcp_write,         METH_VARARGS,
             PyDoc_STR("tcp_write(pcb, arg, len, api_flag) -> int")},
     {"tcp_output",             (PyCFunction)pylwip_tcp_output,         METH_VARARGS,

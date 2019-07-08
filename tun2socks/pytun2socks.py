@@ -33,7 +33,7 @@ class Tun2Socks():
 
     def __init__(self, tun: Tun, conn_handler_factor, loop: asyncio.AbstractEventLoop=None):
         self.tun = tun
-        self.lwip = Lwip(self.lwip_output, self.lwip_accept, self.lwip_tcp_recv)
+        self.lwip = Lwip(self.lwip_output, self.lwip_accept, self.lwip_tcp_recv, self.lwip_tcp_sent)
         self.loop = loop or asyncio.get_event_loop()
         self.conn_handler = conn_handler_factor(self.lwip, self.loop)
         self._write_bufs = []
@@ -42,7 +42,11 @@ class Tun2Socks():
     def start(self):
         self.loop.add_reader(self.tun, self.read)
         asyncio.run_coroutine_threadsafe(self._tmr(), self.loop)
-        asyncio.run_coroutine_threadsafe(T(self._poll_data).start(), self.loop)
+        # asyncio.run_coroutine_threadsafe(T(self._poll_data).start(), self.loop)
+
+    def lwip_tcp_sent(self, arg, pcb, length):
+        self.conn_handler.lwip_tcp_sent(arg, pcb, length)
+        return 0
 
     async def _tmr(self):
         """
@@ -61,6 +65,7 @@ class Tun2Socks():
         try:
             self.conn_handler.lwip_write_ask()
         except Exception as e:
+            _logger.error("error when tmr")
             _logger.exception(e)
 
     def _start_write(self):

@@ -10,6 +10,7 @@ import logging
 from tun2socks.lwip import Lwip
 
 _logger = logging.getLogger(__name__)
+BUFF_MAX = 0
 
 
 def check_future(fut: asyncio.Future):
@@ -98,12 +99,24 @@ class ConnectionHandler:
         for pcb, data in self.pcb_buff.items():
             self._lwip_write_ask(pcb, b"")
 
+    def lwip_tcp_sent(self, arg, pcb, length):
+        """
+        called by lwip tcp_sent
+        :param pcb:
+        :return:
+        """
+        self._lwip_write_ask(pcb, b"")
+
     def _read(self, sock, pcb):
+        if pcb in self.pcb_buff and len(self.pcb_buff[pcb]) > BUFF_MAX:  # read too fast
+            return
         data = os.read(sock.fileno(), 10240)
         # socket side connection is closed
         if not data:
+            _logger.debug("recv empty data from socket, unregister now")
             # don't read from socket side anymore, but we shouldn't close lwip side now until we send all data
             self._unregister_read(pcb)
+            self._lwip_write_ask(pcb, b"")
         else:
             self._lwip_write_ask(pcb, data)
 

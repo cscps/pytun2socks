@@ -6,7 +6,7 @@ _logger = logging.getLogger(__name__)
 
 class Lwip():
 
-    def __init__(self, output_func, accept_func, recv_func,
+    def __init__(self, output_func, accept_func, recv_func, sent_func,
                  addr=b"11.0.0.20", netmask=b"255.255.255.0", gw=b"0.0.0.0"):
         pylwip.lwip_init()
         _addr = pylwip.Ip4AddrT()
@@ -19,6 +19,7 @@ class Lwip():
         self.ouput_func = output_func
         self.accept_func = accept_func
         self.recv_func = recv_func
+        self.sent_func = sent_func
         self.netif=pylwip.Netif()
         self.addr = _addr
         self.netmask = _netmask
@@ -53,7 +54,14 @@ class Lwip():
     def _accept(self, arg, new_pcb, err):
         self.accept_func(new_pcb)
         pylwip.tcp_recv(new_pcb, self._recv)
+        pylwip.tcp_sent(new_pcb, self._sent)
         return 0
+
+    def _sent(self, arg, pcb, length):
+        if self.sent_func:
+            return self.sent_func(arg, pcb, length)
+        _logger.error("no tcp_sent func")
+        return pylwip.ERR_OK
 
     def get_addr_from_pcb(self, tpcb):
         return (tpcb.remote_ip.u_addr.addr, tpcb.remote_port), \
