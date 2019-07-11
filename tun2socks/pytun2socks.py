@@ -61,13 +61,6 @@ class Tun2Socks():
                 _logger.exception(e)
                 _logger.error("error when tmr")
 
-    def _poll_data(self):
-        try:
-            self.conn_handler.lwip_write_ask()
-        except Exception as e:
-            _logger.error("error when tmr")
-            _logger.exception(e)
-
     def _start_write(self):
         self.loop.add_writer(self.tun, self.write)
 

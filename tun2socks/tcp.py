@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 import sys
+from asyncio import futures
 from collections import defaultdict
 
 import pylwip
@@ -28,22 +29,8 @@ class ConnectionHandler:
         self.loop = loop
         self.lwip = lwip
         self.pcb_socket = {}
-        self.pcb_buff = defaultdict(bytes)
-
-    def _register_read(self, pcb, sock):
-        self.pcb_socket[pcb] = sock
-        self.loop.add_reader(sock, self._read, sock, pcb)
-
-    def _unregister_tun_write(self, pcb):
-        self.pcb_buff.pop(pcb, None)
-
-    def _unregister_read(self, pcb):
-        sock:socket.socket = self.pcb_socket.pop(pcb, None)
-        if sock:
-            self.loop.remove_reader(sock)
-            _logger.debug("remove reader {}".format(sock))
-            # FIXME should be call in unblocking state?
-            sock.close()
+        self.lwip_future = {}
+        self.pcb_future = {}
 
     def lwip_accept(self, pcb):
         """
@@ -51,29 +38,16 @@ class ConnectionHandler:
         :param pcb:
         :return:
         """
-        _logger.debug("new tcp connection, {}".format(self.lwip.get_addr_from_pcb(pcb)))
-        sock, r = self.create_connection(pcb)
-        # add to pcb_socket first, when fail to connect, we pop it
-        self._register_read(pcb, sock)
-
-        def fn(fut: asyncio.Future):
-            if fut.exception():
-                _logger.debug("connect fail")
-                self._unregister_read(pcb)
-                self.lwip.tcp_close(pcb)
-            else:
-                _logger.debug("connect done {}".format(self.lwip.get_addr_from_pcb(pcb)))
-
-        r.add_done_callback(fn)
+        asyncio.run_coroutine_threadsafe(self.handle_new_connection(pcb), self.loop)
 
     def lwip_tcp_recv(self, pcb, data):
         if pcb not in self.pcb_socket:
-            _logger.debug("recv from lwip, but socket side is closed")
-            self._lwip_write_ask(pcb, b"")
+            _logger.info("socket side is closed, ignore recvd data")
             return
         sock = self.pcb_socket[pcb]
-        asyncio.run_coroutine_threadsafe(self.loop.sock_sendall(sock, data),
-                                         self.loop)
+        f = asyncio.run_coroutine_threadsafe(self.loop.sock_sendall(sock, data),
+                                             self.loop)
+        self.pcb_future[pcb] = f
 
     def lwip_tcp_close(self, pcb):
         """
@@ -81,23 +55,54 @@ class ConnectionHandler:
         :param pcb:
         :return:
         """
-        # FIXME, when lwip side close, we should only close socket when all data have sent
-        self._unregister_read(pcb)
-        self._unregister_tun_write(pcb)
+        sock = self.pcb_socket.pop(pcb, None)
+        fut: futures.Future = self.pcb_future.pop(pcb, None)
 
-    def create_connection(self, pcb):
+        def fn(f):
+            _logger.debug("close socket in callback")
+            sock.close()
+        if sock:
+            _logger.info("lwip side is closed, close socket side now")
+            if fut:
+                fut.add_done_callback(fn)
+
+    async def create_connection(self, pcb):
         s = socks.socksocket()
         s.setproxy(socks.SOCKS5, "127.0.0.1", 10000)
         s.setblocking(False)
-        r = asyncio.run_coroutine_threadsafe(self.loop.sock_connect(s, (pcb.local_ip.u_addr.addr, pcb.local_port)),
-                                         self.loop)
-        return s, r
+        await self.loop.sock_connect(s, (pcb.local_ip.u_addr.addr, pcb.local_port))
+        return s
 
+    async def handle_new_connection(self, pcb):
+        try:
+            s = await self.create_connection(pcb)
+            _logger.debug("connect done {}".format(self.lwip.get_addr_from_pcb(pcb)))
+            self.pcb_socket[pcb] = s
+            while True:
+                data = await self.loop.sock_recv(s, 10240)
+                if not data:  # socket side is closed
+                    return
+                await self.lwip_async_write(pcb, data)
+        except Exception as e:
+            _logger.exception(e)
+            self.lwip.tcp_close(pcb)
 
-    def lwip_write_ask(self):
-        # FIXME dictionary changed size during iteration
-        for pcb, data in self.pcb_buff.items():
-            self._lwip_write_ask(pcb, b"")
+    async def lwip_async_write(self, pcb, data):
+        while data:
+            f = self.loop.create_future()
+            sndbuf = pylwip.tcp_sndbuf(pcb)
+            if sndbuf:
+                try:
+                    r = self.lwip.write(pcb, data[:sndbuf])
+                    if r == pylwip.ERR_OK:
+                        data = data[sndbuf:]
+                    else:
+                        _logger.error("sndbuf is ok, but write fail")
+                except Exception as e:
+                    # TODO lwip write error, clean connection?
+                    _logger.exception(e)
+            self.lwip_future[pcb] = f
+            await f
 
     def lwip_tcp_sent(self, arg, pcb, length):
         """
@@ -105,36 +110,6 @@ class ConnectionHandler:
         :param pcb:
         :return:
         """
-        self._lwip_write_ask(pcb, b"")
-
-    def _read(self, sock, pcb):
-        if pcb in self.pcb_buff and len(self.pcb_buff[pcb]) > BUFF_MAX:  # read too fast
-            return
-        data = os.read(sock.fileno(), 10240)
-        # socket side connection is closed
-        if not data:
-            _logger.debug("recv empty data from socket, unregister now")
-            # don't read from socket side anymore, but we shouldn't close lwip side now until we send all data
-            self._unregister_read(pcb)
-            self._lwip_write_ask(pcb, b"")
-        else:
-            self._lwip_write_ask(pcb, data)
-
-    def _lwip_write_ask(self, pcb, data):
-        self.pcb_buff[pcb] += data
-        if not self.pcb_buff[pcb]:
-            # socket side is closed and no data to send anymore, we need close lwip side too
-            if pcb not in self.pcb_socket:
-                _logger.info("no more data to send, socket side is closed, now close lwip side")
-                self._unregister_tun_write(pcb)
-                self.lwip.tcp_close(pcb)
-            return
-        try:
-            r = self.lwip.write(pcb, self.pcb_buff[pcb][:1000])
-        except AttributeError as e:
-            _logger.exception(e)
-            self._unregister_read(pcb)
-            self._unregister_tun_write(pcb)
-            return
-        if r == pylwip.ERR_OK:
-            self.pcb_buff[pcb] = self.pcb_buff[pcb][1000:]
+        f = self.lwip_future.pop(pcb, None)
+        if f:
+            f.set_result(length)
