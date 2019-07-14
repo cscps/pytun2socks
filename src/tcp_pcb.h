@@ -3,7 +3,10 @@
 err_t pcb_passive_open(u8_t id, struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb);
 void pcb_destroy (u8_t id, void *data);
 
-struct tcp_ext_arg_callbacks pylwip_ext_args_callbacks;
+static struct tcp_ext_arg_callbacks pylwip_ext_args_callbacks = {
+        .destroy = pcb_destroy,
+        .passive_open = pcb_passive_open
+};
 
 struct pylwip_tcp_pcb{
     PyObject_HEAD;

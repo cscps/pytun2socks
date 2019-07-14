@@ -6,10 +6,12 @@
 #include <lwip/tcp.h>
 #include <lwip/ip4_addr.h>
 #include <lwip/ip_addr.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
 #include <lwip/priv/tcp_priv.h>
 #include <lwip/igmp.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include "ip4_addr.h"
 #include "ip_addr.h"
 #include "pbuf.h"
