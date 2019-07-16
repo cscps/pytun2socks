@@ -92,11 +92,6 @@ void tcp_pcb_dealloc(PyObject* self){
     pcb->sent = NULL;
     self->ob_type->tp_free(self);
 }
-struct tcp_ext_arg_callbacks pylwip_ext_args_callbacks = {
-        .destroy = pcb_destroy,
-        .passive_open = pcb_passive_open
-};
-
 err_t pcb_passive_open(u8_t id, struct tcp_pcb_listen *lpcb, struct tcp_pcb *cpcb){
     return ERR_OK;
 };

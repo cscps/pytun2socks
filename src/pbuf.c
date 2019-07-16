@@ -29,13 +29,24 @@ void pbuf_dealloc(PyObject* self){
     self->ob_type->tp_free(self);
 }
 
+static PyObject *
+pylwip_pbuf_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    PyObject* r = type->tp_alloc(type, 0);
+    if (r){
+        struct pylwip_pbuf* pr = (struct pylwip_pbuf*)r;
+        pr->pbuf = NULL;
+    }
+    return r;
+}
+
 PyTypeObject Pbuf_Type = {
         PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name="pylwip.Pbuf",             /*tp_name*/
         .tp_getset=pbuf_prop,
         .tp_basicsize=sizeof(struct pylwip_pbuf),                          /*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
+        .tp_new=pylwip_pbuf_new,          /*tp_new*/
         .tp_dealloc=pbuf_dealloc
 };
 
