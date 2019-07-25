@@ -5,13 +5,13 @@ import asyncio
 import pytun
 
 from tun2socks.pytun2socks import Tun2Socks
-from tun2socks.tcp import ConnectionHandler
+from tun2socks.tcp_handler import ConnectionHandler
 
 
 def start():
     loop = asyncio.get_event_loop()
-    tun = pytun.TunTapDevice(dev="10")
-    tun.set(addr="11.0.0.1", dstaddr="11.0.0.20", netmask="255.255.255.0", mtu=1500, hwaddr="")
+    tun = pytun.TunTapDevice(dev="8")
+    tun.set(addr="12.0.0.1", dstaddr="12.0.0.20", netmask="255.255.255.0", mtu=1500, hwaddr="")
     tun.up()
     tun2socks = Tun2Socks(tun, ConnectionHandler, loop)
     tun2socks.start()

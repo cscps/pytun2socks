@@ -43,7 +43,7 @@ PyTypeObject IpAddrT_Type = {
         PyVarObject_HEAD_INIT(NULL, 0)
                 .tp_name="pylwip.IpAddrT",             /*tp_name*/
         .tp_getset=pylwip_ip_addr_t_get_set,
-        .tp_basicsize=sizeof(struct pylwip_ip4_addr_t),                          /*tp_basicsize*/
+        .tp_basicsize=sizeof(struct pylwip_ip_addr_t),                          /*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
         .tp_new=PyType_GenericNew,          /*tp_new*/
 };

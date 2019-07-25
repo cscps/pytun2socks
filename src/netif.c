@@ -96,12 +96,27 @@ static PyGetSetDef pylwip_netif_getsets[] =
                 {NULL, NULL, NULL, NULL, NULL}
         };
 
+
+static PyObject *
+pylwip_netif_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
+{
+    PyObject* r = type->tp_alloc(type, 0);
+    if (r){
+        struct pylwip_netif* pr = (struct pylwip_netif*)r;
+        memset(&pr->netif, 0, sizeof(pr->netif));
+        pr->init = NULL;
+        pr->input = NULL;
+        pr->output = NULL;
+    }
+    return r;
+}
+
 PyTypeObject Netif_Type = {
         PyVarObject_HEAD_INIT(NULL, 0)
         .tp_name="pylwip.Netif",       /*tp_name*/
         .tp_basicsize=sizeof(struct pylwip_netif),/*tp_basicsize*/
         .tp_flags=Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-        .tp_new=PyType_GenericNew,          /*tp_new*/
+        .tp_new=pylwip_netif_new,          /*tp_new*/
         .tp_getset=pylwip_netif_getsets
 };
 
@@ -121,6 +136,8 @@ pylwip_netif_add(PyObject *self, PyObject *args, PyObject* kw){
         printf("args err \n");
         return NULL;
     }
+    Py_XDECREF(netif->input);
+    Py_XDECREF(netif->init);
     netif->input = (PyFunctionObject *) netif_input_func;
     netif->init = (PyFunctionObject *) netif_init_func;
     Py_XINCREF(netif_input_func);
