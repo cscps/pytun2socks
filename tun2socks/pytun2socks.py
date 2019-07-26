@@ -41,7 +41,7 @@ class Tun2Socks():
 
     def start(self):
         self.loop.add_reader(self.tun, self.read)
-        asyncio.run_coroutine_threadsafe(self._tmr(), self.loop)
+        self.loop.create_task(self._tmr())
         # asyncio.run_coroutine_threadsafe(T(self._poll_data).start(), self.loop)
 
     def lwip_tcp_sent(self, arg, pcb, length):

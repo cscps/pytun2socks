@@ -1,4 +1,5 @@
 import asyncio
+import time
 from asyncio import futures
 
 import pylwip
@@ -7,6 +8,12 @@ import logging
 from tun2socks.lwip import Lwip
 
 _logger = logging.getLogger(__name__)
+
+
+async def delay():
+    return
+    _logger.debug("sleeping")
+    await asyncio.sleep(5)
 
 
 class ConnectionHandler:
@@ -64,6 +71,7 @@ class PCBConnection():
         self.connected = False
         self.send_handler: futures.Future = None
         self.recv_handler: futures.Future = None
+        self._create_time = time.time()
 
     def start(self):
         pass
@@ -75,21 +83,20 @@ class PCBConnection():
     def start_send(self):
         if self.connected:
             if not self.send_handler or self.send_handler.done():
-                self.send_handler = asyncio.run_coroutine_threadsafe(
+                self.send_handler = self.loop.create_task(
                     self.handle_send(),
-                    self.loop
                 )
 
     def lwip_tcp_accept(self):
-        self.recv_handler = asyncio.run_coroutine_threadsafe(
+        self.recv_handler = self.loop.create_task(
             self.handle_new_connection(),
-            self.loop
         )
 
     async def handle_send(self):
         while self.pcb_buf and self.connected:
             data = self.pcb_buf
             self.pcb_buf = b""
+            await delay()
             await self.loop.sock_sendall(self.sock, data)
 
     async def create_connection(self):
@@ -98,7 +105,7 @@ class PCBConnection():
         s.setproxy(socks.SOCKS5, "127.0.0.1", 10000)
         await self.loop.sock_connect(s, self.lwip.get_addr_from_pcb(self.pcb)[1])
         # s.setproxy(socks.SOCKS5, "127.0.0.1", 8080)
-        # await self.loop.sock_connect(s, (b"localhost", 8899))
+        # await self.loop.sock_connect(s, (b"127.0.0.1", 8899))
         return s
 
     def clean_sock(self):
@@ -121,13 +128,15 @@ class PCBConnection():
                 if not data:  # socket side is closed
                     self.connected = False
                     return
+                await delay()
                 await self.lwip_async_write(self.pcb, data)
         except futures.CancelledError as e:
-            pass
+            _logger.debug("task canceled")
+            return
         except Exception as e:
             _logger.exception(e)
         finally:
-            self.connected = False
+            # no data need to be written to lwip, so when we close it
             self.lwip.tcp_close(self.pcb)
             self.clean_sock()
 
@@ -161,18 +170,29 @@ class PCBConnection():
             self.lwip_future = None
 
     def lwip_tcp_close(self):
+        """
+        called by when lwip side is closed
+        :return:
+        """
         def fn(*args):
             self.loop.remove_writer(self.sock)
             self.sock.close()
 
+        # just cancel socket side
         if self.recv_handler:
             self.recv_handler.cancel()
             self.loop.remove_reader(self.sock)
+
+        # waiting for socket side's all data sent, then close socket
         if self.send_handler:
             if not self.send_handler.done():
                 self.send_handler.add_done_callback(fn)
             else:
                 fn()
+        else:
+            _logger.error("no send handler found")
 
     def __del__(self):
-        _logger.debug("conn of pcb {} dealloc".format(self.pcb))
+        t = time.time() - self._create_time
+        if t > 60:
+            _logger.debug("conn of pcb {} dealloc after {}s".format(self.pcb, t))
