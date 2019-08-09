@@ -5,6 +5,8 @@ from asyncio import futures
 import pylwip
 import socks
 import logging
+
+from config import config
 from tun2socks.lwip import Lwip
 
 _logger = logging.getLogger(__name__)
@@ -102,10 +104,9 @@ class PCBConnection():
     async def create_connection(self):
         s = socks.socksocket()
         s.setblocking(False)
-        s.setproxy(socks.SOCKS5, "127.0.0.1", 10000)
+        s.setproxy(getattr(socks, config.schema.upper()),
+                   config.proxy_ip, config.proxy_port)
         await self.loop.sock_connect(s, self.lwip.get_addr_from_pcb(self.pcb)[1])
-        # s.setproxy(socks.SOCKS5, "127.0.0.1", 8080)
-        # await self.loop.sock_connect(s, (b"127.0.0.1", 8899))
         return s
 
     def clean_sock(self):
