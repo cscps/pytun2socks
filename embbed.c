@@ -3,6 +3,8 @@
 //
 #include <Python.h>
 
+void PyInit_tabinit();
+
 int main (void){
     PyInit_tabinit();
     Py_Initialize();

@@ -493,6 +493,18 @@ pylwip_ip_input(PyObject *self, PyObject *args)
     return PyLong_FromLong(res);
 }
 
+static PyObject *
+pylwip_tcp_sndbuf(PyObject *self, PyObject *args)
+{
+    struct pylwip_tcp_pcb* tcp_pcb = NULL;
+    if (PyArg_ParseTuple(args, "O", &tcp_pcb) < 0){
+        return NULL;
+    };
+    PyCheckPcb(tcp_pcb)
+    long res = tcp_sndbuf(tcp_pcb->tcp_pcb);
+    return PyLong_FromLong(res);
+}
+
 /* List of functions defined in the module */
 
 static PyMethodDef pylwip_methods[] = {
@@ -510,6 +522,8 @@ static PyMethodDef pylwip_methods[] = {
             PyDoc_STR("tcp_new_ip_type() -> TcpPcb")},
     {"tcp_tmr",             (PyCFunction)pylwip_tcp_tmr,         METH_NOARGS,
             PyDoc_STR("tcp_tmr() -> TcpPcb")},
+    {"tcp_sndbuf",             (PyCFunction)pylwip_tcp_sndbuf,         METH_VARARGS,
+            PyDoc_STR("tcp_sndbuf(pcb) -> int")},
     {"netif_set_pretend_tcp",             (PyCFunction)pylwip_netif_set_pretend_tcp,         METH_VARARGS,
             PyDoc_STR("netif_set_pretend_tcp() -> None")},
     {"tcp_bind_to_netif",             (PyCFunction)pylwip_tcp_bind_to_netif,         METH_VARARGS,

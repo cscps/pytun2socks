@@ -6,7 +6,9 @@ include_directories(${PYTHON_INCLUDE_DIRS})
 link_libraries(${PYTHON_LIBRARIES})
 #include_directories(/Users/cs/git/cpython/config/usr/include/python3.7d)
 #link_libraries(/Users/cs/git/cpython/config/usr/lib/libpython3.7d.a)
-add_definitions(-DPLATFORM_DARWIN=1)
+if (CMAKE_SYSTEM_NAME MATCHES "Darwin" OR CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
+    add_definitions(-DPLATFORM_DARWIN=1)
+endif ()
 #add_definitions(-DLWIP_DEBUG=1)
 #add_definitions(-DLWIP_DBG_TYPES_ON=1)
 add_compile_options("-g")
@@ -62,4 +64,4 @@ set(LWIP_SOURCES
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_addr.c
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_frag.c
         ${LIB_LWIP_DIR}custom/sys.c src/pbuf.c src/pbuf.h src/netif.c src/netif.h)
-add_executable(pytun2socks ${PY_LWIP_SOURCES} ${PYTUN2SOCKS_DIR}/test_embbed.c tuntap/tun.c tuntap/tun.h ${LWIP_SOURCES})
+add_executable(pytun2socks ${PY_LWIP_SOURCES} ${PYTUN2SOCKS_DIR}/embbed.c tuntap/tun.c tuntap/tun.h ${LWIP_SOURCES})

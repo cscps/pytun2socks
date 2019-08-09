@@ -41,7 +41,7 @@ class Tun2Socks():
 
     def start(self):
         self.loop.add_reader(self.tun, self.read)
-        asyncio.run_coroutine_threadsafe(self._tmr(), self.loop)
+        self.loop.create_task(self._tmr())
         # asyncio.run_coroutine_threadsafe(T(self._poll_data).start(), self.loop)
 
     def lwip_tcp_sent(self, arg, pcb, length):
@@ -61,13 +61,6 @@ class Tun2Socks():
                 _logger.exception(e)
                 _logger.error("error when tmr")
 
-    def _poll_data(self):
-        try:
-            self.conn_handler.lwip_write_ask()
-        except Exception as e:
-            _logger.error("error when tmr")
-            _logger.exception(e)
-
     def _start_write(self):
         self.loop.add_writer(self.tun, self.write)
 
@@ -76,15 +69,15 @@ class Tun2Socks():
 
     def read(self):
         # FIXME limit should larger than max ip packet size
-        data = os.read(self.tun.fileno(), self.tun.mtu + 4)
-        self.lwip.feed(data[4:])
+        data = self.tun.read(self.tun.mtu)
+        self.lwip.feed(data)
 
     def write(self):
         if not self._write_bufs:
             _logger.error("no data to write")
             return
         # every time one ip packet
-        written = os.write(self.tun.fileno(), self._write_bufs[0])
+        written = self.tun.write(self._write_bufs[0])
         if written < 0:
             _logger.error("error to write tun")
             return
@@ -99,7 +92,6 @@ class Tun2Socks():
             self._stop_write()
 
     def lwip_output(self, netif, data: bytes, ipaddr):
-        data = b'\x00\x00\x00\x02' + data
         self._write_bufs.append(data)
         # can call repeat
         self._start_write()

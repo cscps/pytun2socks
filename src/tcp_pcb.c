@@ -79,7 +79,6 @@ static PyGetSetDef tcp_pcb_prop[] =
 
 void tcp_pcb_dealloc(PyObject* self){
     struct pylwip_tcp_pcb* pcb = (struct pylwip_tcp_pcb*)self;
-    printf("-- %p tcp_pcb dealloc, lwip pcb: %p\n", pcb, pcb->tcp_pcb);
     // the python object shouldn't be freed before
     assert(pcb->freed != 1);
     pcb->freed = 1;
@@ -99,7 +98,6 @@ void pcb_destroy (u8_t id, void *data){
     struct pylwip_tcp_pcb* tcp_pcb = data;
     assert(tcp_pcb && !tcp_pcb->freed);
     tcp_pcb->freed = 2;
-    printf("pcb_destroy called: %p\n", data);
     Py_XDECREF(tcp_pcb->tcp_pcb->callback_arg);
 };
 
