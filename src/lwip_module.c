@@ -6,6 +6,7 @@
 #include <lwip/tcp.h>
 #include <lwip/ip4_addr.h>
 #include <lwip/ip_addr.h>
+#include <lwip/dns.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <lwip/priv/tcp_priv.h>
@@ -476,6 +477,32 @@ pylwip_tcp_recvd(PyObject *self, PyObject *args)
     Py_XINCREF(Py_None);
     Py_RETURN_NONE;
 }
+
+static PyObject *
+pylwip_dns_local_lookup(PyObject *self, PyObject *args)
+{
+    char* hostname;
+    PyObject* addr;
+    int dns_addrtype;
+    if (PyArg_ParseTuple(args, "sOi", &hostname, &addr, &dns_addrtype) < 0){
+        return NULL;
+    };
+    int err_t = dns_local_lookup(hostname, &((struct pylwip_ip_addr_t*)addr)->ip_addr, (u8_t) dns_addrtype);
+    return PyLong_FromLong(err_t);
+}
+
+static PyObject *
+pylwip_dns_local_addhost(PyObject *self, PyObject *args)
+{
+    char* hostname;
+    PyObject* addr;
+    if (PyArg_ParseTuple(args, "sO", &hostname, &addr) < 0){
+        return NULL;
+    };
+    int err_t = dns_local_addhost(hostname, &((struct pylwip_ip_addr_t*)addr)->ip_addr);
+    return PyLong_FromLong(err_t);
+}
+
 static PyObject *
 pylwip_ip_input(PyObject *self, PyObject *args)
 {
@@ -565,6 +592,10 @@ static PyMethodDef pylwip_methods[] = {
     {"get_memory",             (PyCFunction)get_memory,         METH_VARARGS,
             PyDoc_STR("get_memory(addr, i) -> int\n"
                       "!dangerous operation,may eat your cat!")},
+    {"dns_local_addhost",             (PyCFunction)pylwip_dns_local_addhost,         METH_VARARGS,
+            PyDoc_STR("dns_local_addhost(hostname, addr) -> int\n")},
+    {"dns_local_lookup",             (PyCFunction)pylwip_dns_local_lookup,         METH_VARARGS,
+            PyDoc_STR("dns_local_lookup(hostname, addr, type) -> int\n")},
     {NULL, NULL, 0, NULL}           /* sentinel */
 };
 
@@ -651,6 +682,11 @@ pylwip_exec(PyObject *m)
     PyModule_AddIntConstant(m, "IPADDR_TYPE_V4", IPADDR_TYPE_V4);
     PyModule_AddIntConstant(m, "IPADDR_TYPE_V6", IPADDR_TYPE_V6);
     PyModule_AddIntConstant(m, "IPADDR_TYPE_ANY", IPADDR_TYPE_ANY);
+
+    PyModule_AddIntConstant(m, "LWIP_DNS_ADDRTYPE_IPV4", LWIP_DNS_ADDRTYPE_IPV4);
+    PyModule_AddIntConstant(m, "LWIP_DNS_ADDRTYPE_IPV6", LWIP_DNS_ADDRTYPE_IPV6);
+    PyModule_AddIntConstant(m, "LWIP_DNS_ADDRTYPE_IPV6_IPV4", LWIP_DNS_ADDRTYPE_IPV6_IPV4);
+    PyModule_AddIntConstant(m, "LWIP_DNS_ADDRTYPE_IPV4_IPV6", LWIP_DNS_ADDRTYPE_IPV4_IPV6);
     return 0;
  fail:
     Py_XDECREF(m);

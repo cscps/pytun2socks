@@ -1129,7 +1129,7 @@
  * transport.
  */
 #if !defined LWIP_DNS || defined __DOXYGEN__
-#define LWIP_DNS                        0
+#define LWIP_DNS                        1
 #endif
 
 /** DNS maximum number of entries to maintain locally. */
@@ -1169,7 +1169,7 @@
 #endif
 
 /* A list of DNS security features follows */
-#define LWIP_DNS_SECURE_RAND_XID                1
+#define LWIP_DNS_SECURE_RAND_XID                0
 #define LWIP_DNS_SECURE_NO_MULTIPLE_OUTSTANDING 2
 #define LWIP_DNS_SECURE_RAND_SRC_PORT           4
 
@@ -1184,13 +1184,13 @@
  *  that looks up the IP address and returns ERR_OK if found (LWIP_DNS_ADDRTYPE_xxx is passed in dns_addrtype).
  */
 #if !defined DNS_LOCAL_HOSTLIST || defined __DOXYGEN__
-#define DNS_LOCAL_HOSTLIST              0
+#define DNS_LOCAL_HOSTLIST              1
 #endif /* DNS_LOCAL_HOSTLIST */
 
 /** If this is turned on, the local host-list can be dynamically changed
  *  at runtime. */
 #if !defined DNS_LOCAL_HOSTLIST_IS_DYNAMIC || defined __DOXYGEN__
-#define DNS_LOCAL_HOSTLIST_IS_DYNAMIC   0
+#define DNS_LOCAL_HOSTLIST_IS_DYNAMIC   1
 #endif /* DNS_LOCAL_HOSTLIST_IS_DYNAMIC */
 
 /** Set this to 1 to enable querying ".local" names via mDNS

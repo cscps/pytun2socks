@@ -63,5 +63,6 @@ set(LWIP_SOURCES
         ${LIB_LWIP_DIR}src/core/ipv6/icmp6.c
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_addr.c
         ${LIB_LWIP_DIR}src/core/ipv6/ip6_frag.c
+        ${LIB_LWIP_DIR}src/core/dns.c
         ${LIB_LWIP_DIR}custom/sys.c src/pbuf.c src/pbuf.h src/netif.c src/netif.h)
 add_executable(pytun2socks ${PY_LWIP_SOURCES} ${PYTUN2SOCKS_DIR}/embbed.c tuntap/tun.c tuntap/tun.h ${LWIP_SOURCES})

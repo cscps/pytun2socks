@@ -8,6 +8,7 @@ LWIP_SOURCES = [
 "src/api/err.c",
 
 "src/core/udp.c",
+"src/core/dns.c",
 "src/core/memp.c",
 "src/core/init.c",
 "src/core/pbuf.c",
