@@ -108,6 +108,7 @@ extern "C" {
 /** Whether to pretend that we are every host for TCP packets.
  * Set by netif_set_pretend_tcp. */
 #define NETIF_FLAG_PRETEND_TCP  0x100U
+#define NETIF_FLAG_PRETEND_UDP  0x200U
 
 /**
  * @}
@@ -453,6 +454,7 @@ void netif_set_ipaddr(struct netif *netif, const ip4_addr_t *ipaddr);
 void netif_set_netmask(struct netif *netif, const ip4_addr_t *netmask);
 void netif_set_gw(struct netif *netif, const ip4_addr_t *gw);
 void netif_set_pretend_tcp(struct netif *netif, u8_t pretend);
+void netif_set_pretend_udp(struct netif *netif, u8_t pretend);
 /** @ingroup netif_ip4 */
 #define netif_ip4_addr(netif)    ((const ip4_addr_t*)ip_2_ip4(&((netif)->ip_addr)))
 /** @ingroup netif_ip4 */

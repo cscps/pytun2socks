@@ -57,6 +57,7 @@ extern "C" {
 #define UDP_FLAGS_UDPLITE        0x02U
 #define UDP_FLAGS_CONNECTED      0x04U
 #define UDP_FLAGS_MULTICAST_LOOP 0x08U
+#define UDP_FLAGS_PRETEND_UDP    0x10U
 
 struct udp_pcb;
 
@@ -75,7 +76,7 @@ struct udp_pcb;
  * @param port the remote port from which the packet was received
  */
 typedef void (*udp_recv_fn)(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-    const ip_addr_t *addr, u16_t port);
+    const ip_addr_t *addr, u16_t port, const ip_addr_t *dst_addr, u16_t dst_port);
 
 /** the UDP protocol control block */
 struct udp_pcb {
