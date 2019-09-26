@@ -543,6 +543,15 @@ void netif_set_pretend_tcp (struct netif *netif, u8_t pretend)
     }
 }
 
+void netif_set_pretend_udp (struct netif *netif, u8_t pretend)
+{
+  if (pretend) {
+    netif->flags |= NETIF_FLAG_PRETEND_UDP;
+  } else {
+    netif->flags &= ~NETIF_FLAG_PRETEND_UDP;
+  }
+}
+
 static int
 netif_do_set_netmask(struct netif *netif, const ip4_addr_t *netmask, ip_addr_t *old_nm)
 {

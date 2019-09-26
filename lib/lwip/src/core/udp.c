@@ -259,8 +259,8 @@ udp_input(struct pbuf *p, struct netif *inp)
     LWIP_DEBUGF(UDP_DEBUG, (", %"U16_F")\n", pcb->remote_port));
 
     /* compare PCB local addr+port to UDP destination addr+port */
-    if ((pcb->local_port == dest) &&
-        (udp_input_local_match(pcb, inp, broadcast) != 0)) {
+    if (inp->flags & NETIF_FLAG_PRETEND_UDP ||
+    ((pcb->local_port == dest) && (udp_input_local_match(pcb, inp, broadcast) != 0))) {
       if ((pcb->flags & UDP_FLAGS_CONNECTED) == 0) {
         if (uncon_pcb == NULL) {
           /* the first unconnected matching PCB */
@@ -401,7 +401,7 @@ udp_input(struct pbuf *p, struct netif *inp)
       /* callback */
       if (pcb->recv != NULL) {
         /* now the recv function is responsible for freeing p */
-        pcb->recv(pcb->recv_arg, pcb, p, ip_current_src_addr(), src);
+        pcb->recv(pcb->recv_arg, pcb, p, ip_current_src_addr(), src, ip_current_dest_addr(), dest);
       } else {
         /* no recv function registered? then we have to free the pbuf! */
         pbuf_free(p);
@@ -678,10 +678,10 @@ udp_sendto_if_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_i
     } else {
       /* check if UDP PCB local IP address is correct
        * this could be an old address if netif->ip_addr has changed */
-      if (!ip4_addr_cmp(ip_2_ip4(&(pcb->local_ip)), netif_ip4_addr(netif))) {
-        /* local_ip doesn't match, drop the packet */
-        return ERR_RTE;
-      }
+//      if (!ip4_addr_cmp(ip_2_ip4(&(pcb->local_ip)), netif_ip4_addr(netif))) {
+//        /* local_ip doesn't match, drop the packet */
+//        return ERR_RTE;
+//      }
       /* use UDP PCB local IP address as source address */
       src_ip = &pcb->local_ip;
     }
