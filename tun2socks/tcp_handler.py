@@ -20,10 +20,11 @@ async def delay():
 
 class ConnectionHandler:
 
-    def __init__(self, lwip: Lwip, loop: asyncio.AbstractEventLoop):
+    def __init__(self, lwip: Lwip, loop: asyncio.AbstractEventLoop, pcb_connection_class=None):
         self.loop = loop
         self.lwip = lwip
         self.pcb_conn_dict = {}
+        self.pcb_connection_class = pcb_connection_class or PCBConnection
 
     def lwip_accept(self, pcb):
         """
@@ -31,7 +32,7 @@ class ConnectionHandler:
         :param pcb:
         :return:
         """
-        pcb_conn = PCBConnection(self.loop, pcb, self.lwip)
+        pcb_conn = self.pcb_connection_class(self.loop, pcb, self.lwip)
         self.pcb_conn_dict[pcb] = pcb_conn
         pcb_conn.lwip_tcp_accept()
 
@@ -131,7 +132,7 @@ class PCBConnection():
                     return
                 await delay()
                 await self.lwip_async_write(self.pcb, data)
-        except futures.CancelledError as e:
+        except asyncio.CancelledError as e:
             _logger.debug("task canceled")
             return
         except Exception as e:
@@ -144,6 +145,7 @@ class PCBConnection():
     async def lwip_async_write(self, pcb, data):
         while data:
             f = self.loop.create_future()
+            self.lwip_future = f
             sndbuf = pylwip.tcp_sndbuf(pcb)
             if sndbuf:
                 try:
@@ -156,7 +158,6 @@ class PCBConnection():
                     # TODO lwip write error, clean connection?
                     _logger.exception(e)
                     raise e
-            self.lwip_future = f
             # wait for sndbuf space
             await f
 
@@ -166,9 +167,14 @@ class PCBConnection():
         :param pcb:
         :return:
         """
-        if self.lwip_future and not self.lwip_future.done():
-            self.lwip_future.set_result(length)
-            self.lwip_future = None
+        if self.lwip_future:
+            if not self.lwip_future.done():
+                self.lwip_future.set_result(length)
+                self.lwip_future = None
+            else:
+                _logger.error("unexcpected future done")
+        else:
+            _logger.error("none future exists")
 
     def lwip_tcp_close(self):
         """
@@ -197,3 +203,30 @@ class PCBConnection():
         t = time.time() - self._create_time
         if t > 60:
             _logger.debug("conn of pcb {} dealloc after {}s".format(self.pcb, t))
+
+
+class OKResponsePCBConnection(PCBConnection):
+
+    async def handle_new_connection(self):
+        self.connected = True
+        self.start_send()
+        # FIXME when to close socket, close lwip
+        data = b"""HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\n\r\n"""
+        try:
+            await delay()
+            await self.lwip_async_write(self.pcb, data)
+        except asyncio.CancelledError as e:
+            _logger.debug("task canceled")
+            return
+        except Exception as e:
+            _logger.exception(e)
+        finally:
+            # no data need to be written to lwip, so when we close it
+            self.lwip.tcp_close(self.pcb)
+            self.clean_sock()
+
+    async def handle_send(self):
+        self.pcb_buf = b""
+
+    def lwip_tcp_close(self):
+        pass

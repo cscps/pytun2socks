@@ -4,7 +4,7 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(message)s")
 import asyncio
 import pytun
 from tun2socks.pytun2socks import Tun2Socks
-from tun2socks.tcp_handler import ConnectionHandler
+from tun2socks.tcp_handler import ConnectionHandler, OKResponsePCBConnection
 import sys
 import signal
 from config import config
@@ -23,7 +23,7 @@ def start():
     tun.set(addr=config.addr, dstaddr=config.dst, netmask=config.netmask, mtu=config.mtu, hwaddr="")
     tun.up()
     signal.signal(signal.SIGINT, functools.partial(signal_handler, tun))
-    tun2socks = Tun2Socks(tun, ConnectionHandler, loop)
+    tun2socks = Tun2Socks(tun, functools.partial(ConnectionHandler, pcb_connection_class=OKResponsePCBConnection), loop)
     tun2socks.start()
     loop.run_forever()
 
