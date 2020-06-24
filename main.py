@@ -10,7 +10,7 @@ import signal
 from config import config
 
 
-def signal_handler(tun, signal, frame):
+def signal_handler(tun, tun2sock, signal, frame):
     tun.down()
     tun.close()
     print("user exit")
@@ -22,10 +22,12 @@ def start():
     tun = pytun.TunTapDevice(dev=config.dev, name=config.name, flags=pytun.IFF_TUN | pytun.IFF_NO_PI)
     tun.set(addr=config.addr, dstaddr=config.dst, netmask=config.netmask, mtu=config.mtu, hwaddr="")
     tun.up()
-    signal.signal(signal.SIGINT, functools.partial(signal_handler, tun))
     tun2socks = Tun2Socks(tun, functools.partial(ConnectionHandler, pcb_connection_class=OKResponsePCBConnection), loop)
+    signal.signal(signal.SIGINT, functools.partial(signal_handler, tun, tun2socks))
     tun2socks.start()
     loop.run_forever()
 
 if __name__ == "__main__":
+    import os
+    print("pid:", os.getpid())
     start()
