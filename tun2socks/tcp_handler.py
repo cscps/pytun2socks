@@ -52,7 +52,7 @@ class ConnectionHandler:
         """
         conn: PCBConnection = self.pcb_conn_dict.pop(pcb, None)
         if conn:
-            conn.lwip_tcp_close()
+            conn.handler_close_connection()
         else:
             _logger.error("pcb not in pcb pool when tcp_close")
 
@@ -90,6 +90,9 @@ class PCBConnection():
     def lwip_tcp_recv(self, data):
         self.pcb_buf += data
         self.start_send()
+        if not data:
+            self.handler_close_connection()
+            self.lwip.tcp_close(self.pcb)
 
     def start_send(self):
         if self.connected:
@@ -118,21 +121,13 @@ class PCBConnection():
         await self.loop.sock_connect(s, self.lwip.get_addr_from_pcb(self.pcb)[1])
         return s
 
-    def clean_sock(self):
-        pass
-
     async def handle_new_connection(self):
         try:
             s = await self.create_connection()
-        except Exception as e:
-            _logger.exception(e)
-            self.lwip.tcp_close(self.pcb)
-            return
-        self.sock = s
-        self.connected = True
-        self.start_send()
-        # FIXME when to close socket, close lwip
-        try:
+            self.sock = s
+            self.connected = True
+            self.start_send()
+            # FIXME when to close socket, close lwip
             while True:
                 data = await self.loop.sock_recv(s, 10240)
                 if not data:  # socket side is closed
@@ -147,9 +142,8 @@ class PCBConnection():
             _logger.exception(e)
         finally:
             # no data need to be written to lwip, so we close it
+            self.handler_close_connection()
             self.done_listener(self.pcb)
-            self.lwip.tcp_close(self.pcb)
-            self.clean_sock()
 
     async def lwip_async_write(self, pcb, data):
         while data:
@@ -185,7 +179,7 @@ class PCBConnection():
         else:
             _logger.error("none future exists")
 
-    def lwip_tcp_close(self):
+    def handler_close_connection(self):
         """
         called by when lwip side is closed
         :return:
@@ -231,12 +225,10 @@ class OKResponsePCBConnection(PCBConnection):
             _logger.exception(e)
         finally:
             # no data need to be written to lwip, so we close it
-            self.done_listener(self.pcb)
-            self.lwip.tcp_close(self.pcb)
-            self.clean_sock()
+            self.handler_close_connection()
 
     async def handle_send(self):
         self.pcb_buf = b""
 
-    def lwip_tcp_close(self):
+    def handler_close_connection(self):
         pass

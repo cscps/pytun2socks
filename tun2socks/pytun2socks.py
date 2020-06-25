@@ -100,9 +100,4 @@ class Tun2Socks():
         self.conn_handler.lwip_accept(newpcb)
 
     def lwip_tcp_recv(self, tpcb, data):
-        if not data:
-            _logger.debug("lwip tcp_recv empty data, close connection")
-            self.lwip.tcp_close(tpcb)
-            self.conn_handler.lwip_tcp_close(tpcb)
-        else:
-            self.conn_handler.lwip_tcp_recv(tpcb, data)
+        self.conn_handler.lwip_tcp_recv(tpcb, data)
