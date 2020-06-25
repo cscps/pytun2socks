@@ -368,7 +368,6 @@ static err_t
 pylwip_tcp_recv_wrapper(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err){
     struct pylwip_tcp_pcb* py_pcb= (struct pylwip_tcp_pcb*)tpcb->callback_arg;
     if (!p || !p->tot_len){
-        printf("recv empty pbuf\n");
         if (!py_pcb){
             perror("python tcp_pcb has been deallocated\n");
             return ERR_ABRT;

@@ -51,9 +51,7 @@ class ConnectionHandler:
         :return:
         """
         conn: PCBConnection = self.pcb_conn_dict.pop(pcb, None)
-        if conn:
-            conn.handler_close_connection()
-        else:
+        if not conn:
             _logger.error("pcb not in pcb pool when tcp_close")
 
     def lwip_tcp_sent(self, arg, pcb, length):
@@ -233,3 +231,4 @@ class OKResponsePCBConnection(PCBConnection):
 
     def handler_close_connection(self):
         self.lwip.tcp_close(self.pcb)
+        self.done_listener(self.pcb)
