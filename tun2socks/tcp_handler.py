@@ -88,11 +88,11 @@ class PCBConnection():
         pass
 
     def lwip_tcp_recv(self, data):
-        self.pcb_buf += data
-        self.start_send()
         if not data:
             self.handler_close_connection()
-            # self.lwip.tcp_close(self.pcb)
+        else:
+            self.pcb_buf += data
+            self.start_send()
 
     def start_send(self):
         if self.connected:
