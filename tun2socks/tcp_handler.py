@@ -92,7 +92,7 @@ class PCBConnection():
         self.start_send()
         if not data:
             self.handler_close_connection()
-            self.lwip.tcp_close(self.pcb)
+            # self.lwip.tcp_close(self.pcb)
 
     def start_send(self):
         if self.connected:
@@ -143,7 +143,6 @@ class PCBConnection():
         finally:
             # no data need to be written to lwip, so we close it
             self.handler_close_connection()
-            self.done_listener(self.pcb)
 
     async def lwip_async_write(self, pcb, data):
         while data:
@@ -187,6 +186,7 @@ class PCBConnection():
         def fn(*args):
             self.loop.remove_writer(self.sock)
             self.sock.close()
+            self.lwip.tcp_close(self.pcb)
 
         # just cancel socket side
         if self.recv_handler:
@@ -231,4 +231,4 @@ class OKResponsePCBConnection(PCBConnection):
         self.pcb_buf = b""
 
     def handler_close_connection(self):
-        pass
+        self.lwip.tcp_close(self.pcb)
