@@ -187,6 +187,7 @@ class PCBConnection():
             self.loop.remove_writer(self.sock)
             self.sock.close()
             self.lwip.tcp_close(self.pcb)
+            self.done_listener(self.pcb)
 
         # just cancel socket side
         if self.recv_handler:
